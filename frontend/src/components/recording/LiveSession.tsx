@@ -6,7 +6,7 @@
  * | Ask AI panel. The record card floats over the transcript column.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Copy, Globe, PanelRight } from 'lucide-react';
+import { Copy, PanelRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
@@ -38,11 +38,9 @@ const isGeneric = (name: string) => /^speaker \d+$/i.test(name.trim());
 export function LiveSession({
   isProcessingStop,
   isStopping,
-  onLanguageSettings,
 }: {
   isProcessingStop: boolean;
   isStopping: boolean;
-  onLanguageSettings: () => void;
 }) {
   const {
     transcripts,
@@ -220,10 +218,6 @@ export function LiveSession({
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
-              <Button variant="ghost" size="sm" onClick={onLanguageSettings}>
-                <Globe />
-                Language
-              </Button>
               <Hint label="Copy transcript">
                 <Button variant="ghost" size="icon-sm" onClick={copyTranscript} disabled={transcripts.length === 0} aria-label="Copy transcript">
                   <Copy />

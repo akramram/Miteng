@@ -20,7 +20,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, Layers, Minimize2, Mic, Pause, Play, Square } from 'lucide-react';
+import { ChevronDown, Globe, Layers, Minimize2, Mic, Pause, Play, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import Analytics from '@/lib/analytics';
@@ -48,6 +48,8 @@ interface RecordingControlsProps {
   /** Called the moment Stop is pressed. */
   onStopInitiated?: () => void;
   isRecordingDisabled: boolean;
+  /** Opens the transcription language dialog. */
+  onLanguageSettings: () => void;
   selectedDevices?: {
     micDevice: string | null;
     systemDevice: string | null;
@@ -90,6 +92,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   onTranscriptionError,
   onStopInitiated,
   isRecordingDisabled,
+  onLanguageSettings,
   selectedDevices,
 }) => {
   // Pause and mute live in the shared context so the tray and minibar agree.
@@ -100,7 +103,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   // Phase text from useRecordingStart ("Preparing transcription model…").
   const startupMessage = recordingState.statusMessage;
 
-  const { selectedDevices: savedDevices, setSelectedDevices } = useConfig();
+  const { selectedDevices: savedDevices, setSelectedDevices, selectedLanguage } = useConfig();
   const activeDevices = savedDevices ?? selectedDevices;
   const isMacOS = usePlatform() === 'macos';
   // All computer audio, or only chosen apps (Settings > Recording has it too).
@@ -529,6 +532,17 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         <div className="h-8 w-px shrink-0 self-center bg-af-border" />
 
         <div className={cn('flex items-center gap-2', isRecording ? 'min-w-0 flex-1' : 'shrink-0')}>
+          <Hint label="Transcription language">
+            <button
+              type="button"
+              onClick={onLanguageSettings}
+              aria-label={`Transcription language: ${selectedLanguage || 'auto'}`}
+              className="flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-af-panel-2 px-3 text-[11px] font-semibold uppercase text-af-text-2 ring-1 ring-inset ring-af-border transition-colors duration-150 hover:bg-af-hover hover:text-af-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-af-accent/60"
+            >
+              <Globe size={14} strokeWidth={1.75} />
+              {selectedLanguage === 'auto-translate' ? 'Auto→EN' : selectedLanguage || 'auto'}
+            </button>
+          </Hint>
           <RecordingVoiceLane
             kind="mic"
             open={openLane === 'mic'}

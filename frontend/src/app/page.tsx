@@ -143,7 +143,6 @@ export default function Home() {
               <LiveSession
                 isProcessingStop={isProcessingStop}
                 isStopping={isStopping || handingOff}
-                onLanguageSettings={() => showModal('languageSettings')}
               />
             ) : (
               <div className="min-w-0 flex-1">
@@ -162,6 +161,7 @@ export default function Home() {
               onStopInitiated={() => setIsStopping(true)}
               onTranscriptionError={(message) => showModal('errorAlert', message)}
               isRecordingDisabled={isRecordingDisabled}
+              onLanguageSettings={() => showModal('languageSettings')}
               selectedDevices={selectedDevices}
             />
           </RecordingCardSlot>
