@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { RawModelInfo } from '@/hooks/useTranscriptionModels';
+import { canTranslate, pickTranslationModel } from '@/lib/whisper-models';
 
 export interface Language {
   code: string;
@@ -117,44 +118,53 @@ const LANGUAGES: Language[] = [
   { code: 'su', name: 'Sundanese' },
 ];
 
-import type { TranscriptModelProps } from './TranscriptSettings';
-
 interface LanguageSelectionProps {
   selectedLanguage: string;
   onLanguageChange: (language: string) => void;
   disabled?: boolean;
-  provider?: TranscriptModelProps['provider'];
 }
 
 export function LanguageSelection({
   selectedLanguage,
   onLanguageChange,
   disabled = false,
-  provider = 'localWhisper'
 }: LanguageSelectionProps) {
   const [saving, setSaving] = useState(false);
-  const { setSelectedLanguage, setTranscriptModelConfig } = useConfig();
+  const { setSelectedLanguage, transcriptModelConfig, setTranscriptModelConfig } = useConfig();
 
   // Parakeet can't be pinned to a language (and lacks many, e.g. Indonesian); picking one switches live transcription to Whisper.
-  const isParakeet = provider === 'parakeet';
+  const isParakeet = transcriptModelConfig.provider === 'parakeet';
+  const liveModelCannotTranslate = isParakeet || !canTranslate(transcriptModelConfig.model);
 
-  // Returns false when no multilingual Whisper model is installed.
-  const switchToMultilingualWhisper = async (): Promise<boolean> => {
+  /**
+   * Switch live transcription to an installed Whisper model that can do the
+   * job. Returns false when none is installed.
+   */
+  const switchWhisperModel = async (forTranslation: boolean): Promise<boolean> => {
     const models = await invoke<RawModelInfo[]>('whisper_get_available_models');
     // `.en` models are English-only.
-    const model = models.find(m => m.status === 'Available' && !m.name.endsWith('.en'));
+    const installed = models.filter(m => m.status === 'Available' && !m.name.endsWith('.en'));
+    const model = forTranslation ? pickTranslationModel(installed.map(m => m.name)) : installed[0]?.name;
     if (!model) return false;
-    await invoke('api_save_transcript_config', { provider: 'localWhisper', model: model.name, apiKey: null });
-    setTranscriptModelConfig(prev => ({ ...prev, provider: 'localWhisper', model: model.name, apiKey: null }));
-    toast.info('Switched to Whisper for multi-language support', { description: `Live model: ${model.name}` });
+    await invoke('api_save_transcript_config', { provider: 'localWhisper', model, apiKey: null });
+    setTranscriptModelConfig(prev => ({ ...prev, provider: 'localWhisper', model, apiKey: null }));
+    toast.info(forTranslation ? 'Switched to a Whisper model that can translate' : 'Switched to Whisper for multi-language support', {
+      description: `Live model: ${model}`,
+    });
     return true;
   };
 
   const handleLanguageChange = async (languageCode: string) => {
     setSaving(true);
     try {
+      if (languageCode === 'auto-translate' && liveModelCannotTranslate && !(await switchWhisperModel(true))) {
+        toast.warning('Download a Whisper model that can translate', {
+          description: 'Parakeet and Whisper Large v3 Turbo only transcribe in the original language. Install Whisper Medium or Small in Settings → Speech model, then pick this option again.'
+        });
+        return;
+      }
       if (isParakeet && languageCode !== 'auto' && languageCode !== 'auto-translate' && languageCode !== 'en'
-        && !(await switchToMultilingualWhisper())) {
+        && !(await switchWhisperModel(false))) {
         toast.warning('Download a multilingual Whisper model', {
           description: 'Parakeet can\'t transcribe a chosen language. Install Whisper Base or Small in Settings → Speech model, then pick this language again.'
         });
@@ -245,12 +255,44 @@ export function LanguageSelection({
               </div>
             </div>
           )}
-          {selectedLanguage === 'auto-translate' && (
+          {selectedLanguage === 'auto-translate' && !liveModelCannotTranslate && (
             <div className="flex gap-2.5 rounded-lg border border-af-accent/35 bg-af-accent/10 px-3 py-2.5 text-af-text-2">
               <Languages className="mt-px h-4 w-4 shrink-0 text-af-accent" />
               <div>
                 <p className="font-medium text-af-text">Transcripts are translated to English</p>
                 <p className="mt-0.5">Useful for meetings in several languages when you want English notes.</p>
+              </div>
+            </div>
+          )}
+          {selectedLanguage === 'auto-translate' && liveModelCannotTranslate && (
+            <div className="flex gap-2.5 rounded-lg border border-af-warning/35 bg-af-warning/10 px-3 py-2.5 text-af-text-2">
+              <AlertTriangle className="mt-px h-4 w-4 shrink-0 text-af-warning" />
+              <div>
+                <p className="font-medium text-af-text">The live model can't translate</p>
+                <p className="mt-0.5">
+                  {isParakeet ? 'Parakeet' : transcriptModelConfig.model} transcribes in the original language. Translation needs Whisper Medium, Small, Large v3 or Base.
+                </p>
+                <button
+                  type="button"
+                  disabled={disabled || saving}
+                  onClick={async () => {
+                    setSaving(true);
+                    try {
+                      if (!(await switchWhisperModel(true))) {
+                        toast.warning('Download a Whisper model that can translate', {
+                          description: 'Install Whisper Medium or Small in Settings → Speech model.',
+                        });
+                      }
+                    } catch (error) {
+                      toast.error('Could not switch the live model', { description: String(error) });
+                    } finally {
+                      setSaving(false);
+                    }
+                  }}
+                  className="mt-2 rounded-md bg-af-panel-2 px-2.5 py-1 text-xs font-medium text-af-text ring-1 ring-inset ring-af-border hover:bg-af-hover disabled:opacity-50"
+                >
+                  Use a model that translates
+                </button>
               </div>
             </div>
           )}

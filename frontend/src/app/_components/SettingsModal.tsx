@@ -48,7 +48,6 @@ export function SettingsModals({ modals, messages, onClose }: SettingsModalsProp
             selectedLanguage={selectedLanguage}
             onLanguageChange={setSelectedLanguage}
             disabled={isRecording}
-            provider={transcriptModelConfig.provider}
           />
           <DialogFooter>
             <Button onClick={() => onClose('languageSettings')}>Done</Button>

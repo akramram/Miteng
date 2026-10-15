@@ -27,6 +27,7 @@ import { LANGUAGES } from '@/constants/languages';
 import { useTranscriptionModels, ModelOption } from '@/hooks/useTranscriptionModels';
 import Analytics from '@/lib/analytics';
 import { announceChange } from '@/lib/workspace-api';
+import { canTranslate } from '@/lib/whisper-models';
 
 interface RetranscribeDialogProps {
   open: boolean;
@@ -396,9 +397,15 @@ export function RetranscribeDialog({
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-muted-foreground">
-                  Select a specific language to improve accuracy, or use auto-detect
-                </p>
+                {selectedLang === 'auto-translate' && selectedModelDetails && !canTranslate(selectedModelDetails.name) ? (
+                  <p className="text-xs text-af-warning">
+                    {selectedModelDetails.name} can't translate; it transcribes in the original language. Pick Whisper Medium, Small, Large v3 or Base below.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Select a specific language to improve accuracy, or use auto-detect
+                  </p>
+                )}
               </div>
             ) : (
               <div className="space-y-3">
