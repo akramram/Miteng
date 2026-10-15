@@ -1,14 +1,15 @@
 'use client';
 
 /**
- * Settings > Labs: experimental features, each off until it is turned on.
+ * Settings > Labs: experimental features, off until turned on (echo
+ * cancellation is the exception: on by default).
  * Every feature says where it shows up once on, since most of them live in
  * other screens (the meeting player, a contact's page, the record flow).
  */
 import { useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { invoke } from '@tauri-apps/api/core';
-import { AudioWaveform, Eraser, Fingerprint, Gauge, VolumeX, Workflow, X, type LucideIcon } from 'lucide-react';
+import { AudioWaveform, Ear, Eraser, Fingerprint, Gauge, VolumeX, Workflow, X, type LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Switch } from '@/components/ui/switch';
 import { Avatar } from '@/components/ui/avatar';
@@ -40,6 +41,19 @@ const GROUPS: Array<{ title: string; features: Feature[] }> = [
         description:
           'Start recording when meeting detection sees a call using your microphone or camera, and stop and save it when the call ends. Recordings you start yourself are never stopped.',
         where: 'Turns on meeting detection. A notice says when a call starts or ends a recording.',
+      },
+    ],
+  },
+  {
+    title: 'Recording',
+    features: [
+      {
+        key: 'echoCancellation',
+        icon: Ear,
+        title: 'Echo cancellation',
+        description:
+          'Remove computer audio that your microphone picks up from the speakers, so the other side is not transcribed a second time as you. Uses the computer audio as the reference; not needed with headphones.',
+        where: 'Applies to the microphone track from the next recording you start.',
       },
     ],
   },
@@ -207,7 +221,7 @@ export function LabsSettings() {
   const { labs } = useLabs();
   const [busy, setBusy] = useState<LabsFeature | null>(null);
 
-  // Three switches live in Rust; show what it actually has.
+  // Four switches live in Rust; show what it actually has.
   useEffect(() => {
     void syncLabsFromBackend().catch(() => undefined);
   }, []);

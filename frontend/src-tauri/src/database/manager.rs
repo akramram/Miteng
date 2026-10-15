@@ -51,11 +51,12 @@ impl DatabaseManager {
         // holding the pre-migration schema. Reopen before serving app queries.
         migration_pool.close().await;
         let pool = SqlitePool::connect(tauri_db_path).await?;
+        super::meetily_import::import_previous_install(&pool).await;
 
         Ok(DatabaseManager { pool })
     }
 
-    async fn run_migrations(pool: &SqlitePool) -> Result<()> {
+    pub(super) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         match MIGRATOR.run(pool).await {
             Ok(()) => Ok(()),
             Err(MigrateError::VersionMismatch(PEOPLE_MIGRATION_VERSION)) => {

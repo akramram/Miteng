@@ -71,7 +71,7 @@ const state = {
     ignored_apps: [] as string[],
     notify: true,
   },
-  labs: { whisperStrictSilence: false, voiceProfiles: false, parakeetGpu: false },
+  labs: { whisperStrictSilence: false, voiceProfiles: false, parakeetGpu: false, echoCancellation: true },
   voices: [{ person_id: 'person-tom', samples: 6, meetings: 1, from: ['meeting-acme-kickoff'] }] as Array<{
     person_id: string;
     samples: number;
@@ -427,6 +427,11 @@ function handle(cmd: string, args: Args): unknown {
       return state.labs.whisperStrictSilence;
     case 'set_whisper_strict_silence':
       state.labs.whisperStrictSilence = !!args.enabled;
+      return null;
+    case 'get_echo_cancellation_enabled':
+      return state.labs.echoCancellation;
+    case 'set_echo_cancellation_enabled':
+      state.labs.echoCancellation = !!args.enabled;
       return null;
     case 'get_voice_profiles_enabled':
       return state.labs.voiceProfiles;

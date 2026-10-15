@@ -30,6 +30,42 @@ use log::{info, warn};
 use sonora::config::EchoCanceller;
 use sonora::{AudioProcessing, Config, StreamConfig};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::LazyLock;
+
+/// Labs switch, persisted in the data root. On unless the user turned it off;
+/// read once per recording when the pipeline starts.
+static ENABLED: LazyLock<AtomicBool> = LazyLock::new(|| {
+    let enabled = std::fs::read_to_string(enabled_path())
+        .map(|value| value.trim() != "false")
+        .unwrap_or(true);
+    AtomicBool::new(enabled)
+});
+
+fn enabled_path() -> std::path::PathBuf {
+    crate::paths::install_data_root().join("echo_cancellation_enabled.txt")
+}
+
+pub fn echo_cancellation_enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+pub fn get_echo_cancellation_enabled() -> bool {
+    echo_cancellation_enabled()
+}
+
+#[tauri::command]
+pub fn set_echo_cancellation_enabled(enabled: bool) -> Result<(), String> {
+    let file = enabled_path();
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(file, if enabled { "true" } else { "false" })
+        .map_err(|error| error.to_string())?;
+    ENABLED.store(enabled, Ordering::Relaxed);
+    Ok(())
+}
 
 /// How far ahead of the mic the system reference is fed, in milliseconds.
 ///

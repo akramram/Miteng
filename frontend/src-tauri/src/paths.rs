@@ -167,6 +167,22 @@ fn copy_path_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io:
     Ok(())
 }
 
+/// Copy `src` into `dst`, file by file, skipping anything `dst` already has.
+/// A missing `src` is not an error. On APFS `fs::copy` clones, so large model
+/// files cost no extra disk space.
+pub(crate) fn copy_missing(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            copy_missing(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+    } else if src.is_file() && !dst.exists() {
+        std::fs::copy(src, dst)?;
+    }
+    Ok(())
+}
+
 /// Ensure `dir` exists and is writable by probing an actual file write.
 #[cfg(not(target_os = "macos"))]
 fn ensure_writable(dir: &PathBuf) -> bool {

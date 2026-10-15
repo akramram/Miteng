@@ -645,6 +645,8 @@ pub fn run() {
             audio::waveform::get_waveform_peaks,
             whisper_engine::labs::get_whisper_strict_silence,
             whisper_engine::labs::set_whisper_strict_silence,
+            audio::echo_canceller::get_echo_cancellation_enabled,
+            audio::echo_canceller::set_echo_cancellation_enabled,
             diarization::voice_profiles::get_voice_profiles_enabled,
             diarization::voice_profiles::set_voice_profiles_enabled,
             diarization::voice_profiles::enroll_voice_profile,

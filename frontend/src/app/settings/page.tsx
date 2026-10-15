@@ -34,7 +34,7 @@ const SECTIONS: Array<{ id: SectionId; label: string; hint: string; description:
   { id: 'summaries', label: 'Summaries', hint: 'Model, language', description: 'Which AI model writes summaries and answers Ask AI, and in what language.', icon: Sparkles },
   { id: 'detection', label: 'Meeting detection', hint: 'Prompt to record', description: 'Get a prompt to record when a call starts in another app.', icon: Radar },
   { id: 'local', label: 'Local AI', hint: 'Runtime status', description: 'The on-device engines that run transcription and summaries.', icon: Cpu },
-  { id: 'labs', label: 'Labs', hint: 'Experimental features', description: 'Experimental features. Each stays off until you turn it on, and may change in later versions.', icon: FlaskConical },
+  { id: 'labs', label: 'Labs', hint: 'Experimental features', description: 'Experimental features that may change in later versions. Most stay off until you turn them on.', icon: FlaskConical },
   { id: 'about', label: 'About', hint: 'Version, updates', description: 'Version, updates and links.', icon: Info },
 ];
 

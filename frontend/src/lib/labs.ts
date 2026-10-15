@@ -5,6 +5,7 @@ export interface LabsPreferences {
   whisperSilenceGuard: boolean;
   cleanTranscript: boolean;
   parakeetGpu: boolean;
+  echoCancellation: boolean;
 }
 
 export const defaultLabsPreferences: LabsPreferences = {
@@ -14,6 +15,8 @@ export const defaultLabsPreferences: LabsPreferences = {
   whisperSilenceGuard: false,
   cleanTranscript: false,
   parakeetGpu: false,
+  // Kept in Rust and on by default; mirrored here like the other Rust-backed switches.
+  echoCancellation: true,
 };
 
 const key = 'meetily-labs-v1';

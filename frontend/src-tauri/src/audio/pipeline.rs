@@ -1042,7 +1042,8 @@ pub struct AudioPipeline {
     system_vad: ContinuousVadProcessor,
     /// Removes speaker echo from the mic (system audio is the reference) before
     /// VAD, the mic/system tracks and the mix. Delays both sources equally.
-    echo_canceller: MicEchoCanceller,
+    /// `None` when the Labs switch was off as this recording started.
+    echo_canceller: Option<MicEchoCanceller>,
     sample_rate: u32,
     chunk_id_counter: u64,
     // Performance optimization: reduce logging frequency
@@ -1132,7 +1133,8 @@ impl AudioPipeline {
             state,
             mic_vad,
             system_vad,
-            echo_canceller: MicEchoCanceller::new(sample_rate),
+            echo_canceller: super::echo_canceller::echo_cancellation_enabled()
+                .then(|| MicEchoCanceller::new(sample_rate)),
             sample_rate,
             chunk_id_counter: 0,
             // Performance optimization: reduce logging frequency
@@ -1381,7 +1383,7 @@ impl AudioPipeline {
                     if let Some(start_seconds) = discontinuity_start {
                         // The canceller still holds pre-gap audio: hand it to VAD
                         // and the tracks before the VAD timeline jumps ahead.
-                        let (held_mic, held_sys) = self.echo_canceller.flush();
+                        let (held_mic, held_sys) = self.flush_echo();
                         self.dispatch_window(held_mic, held_sys, chunk.timestamp);
                         let mut completed = Vec::new();
                         if let Some(segment) = self.mic_vad.finalize_active_speech() {
@@ -1405,7 +1407,7 @@ impl AudioPipeline {
                     // STEP 2: Mix audio in fixed windows when both streams have sufficient data
                     while self.ring_buffer.can_mix() {
                         if let Some((mic_window, sys_window)) = self.ring_buffer.extract_window() {
-                            let (mic, sys) = self.echo_canceller.process(&mic_window, &sys_window);
+                            let (mic, sys) = self.cancel_echo(mic_window, sys_window);
                             self.dispatch_window(mic, sys, chunk.timestamp);
                         }
                     }
@@ -1436,7 +1438,22 @@ impl AudioPipeline {
         Ok(())
     }
 
-    /// STEPS 3-4 for one aligned, echo-cancelled mic/system pair.
+    fn cancel_echo(&mut self, mic: Vec<f32>, sys: Vec<f32>) -> (Vec<f32>, Vec<f32>) {
+        match self.echo_canceller.as_mut() {
+            Some(canceller) => canceller.process(&mic, &sys),
+            None => (mic, sys),
+        }
+    }
+
+    /// Audio the canceller is holding back; empty when echo cancellation is off.
+    fn flush_echo(&mut self) -> (Vec<f32>, Vec<f32>) {
+        self.echo_canceller
+            .as_mut()
+            .map(MicEchoCanceller::flush)
+            .unwrap_or_default()
+    }
+
+    /// STEPS 3-4 for one aligned (echo-cancelled when enabled) mic/system pair.
     fn dispatch_window(&mut self, mic_window: Vec<f32>, sys_window: Vec<f32>, timestamp: f64) {
         if mic_window.is_empty() {
             return;
@@ -1490,12 +1507,12 @@ impl AudioPipeline {
         );
 
         while let Some((mic_window, sys_window)) = self.ring_buffer.extract_remaining() {
-            let (mic, sys) = self.echo_canceller.process(&mic_window, &sys_window);
+            let (mic, sys) = self.cancel_echo(mic_window, sys_window);
             self.dispatch_window(mic, sys, 0.0);
         }
         // Return the audio the echo canceller holds back, or the end of the last
         // utterance would never reach VAD or the recording.
-        let (held_mic, held_sys) = self.echo_canceller.flush();
+        let (held_mic, held_sys) = self.flush_echo();
         self.dispatch_window(held_mic, held_sys, 0.0);
 
         crate::diarization::live_nemotron::finish();
