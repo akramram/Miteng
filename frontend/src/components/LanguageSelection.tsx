@@ -1,9 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { AlertTriangle, Globe, Info, Languages } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import type { RawModelInfo } from '@/hooks/useTranscriptionModels';
 
 export interface Language {
   code: string;
@@ -131,17 +133,33 @@ export function LanguageSelection({
   provider = 'localWhisper'
 }: LanguageSelectionProps) {
   const [saving, setSaving] = useState(false);
-  const { setSelectedLanguage } = useConfig();
+  const { setSelectedLanguage, setTranscriptModelConfig } = useConfig();
 
-  // Parakeet only supports auto-detection (doesn't support manual language selection)
+  // Parakeet can't be pinned to a language (and lacks many, e.g. Indonesian); picking one switches live transcription to Whisper.
   const isParakeet = provider === 'parakeet';
-  const availableLanguages = isParakeet
-    ? LANGUAGES.filter(lang => lang.code === 'auto' || lang.code === 'auto-translate')
-    : LANGUAGES;
+
+  // Returns false when no multilingual Whisper model is installed.
+  const switchToMultilingualWhisper = async (): Promise<boolean> => {
+    const models = await invoke<RawModelInfo[]>('whisper_get_available_models');
+    // `.en` models are English-only.
+    const model = models.find(m => m.status === 'Available' && !m.name.endsWith('.en'));
+    if (!model) return false;
+    await invoke('api_save_transcript_config', { provider: 'localWhisper', model: model.name, apiKey: null });
+    setTranscriptModelConfig(prev => ({ ...prev, provider: 'localWhisper', model: model.name, apiKey: null }));
+    toast.info('Switched to Whisper for multi-language support', { description: `Live model: ${model.name}` });
+    return true;
+  };
 
   const handleLanguageChange = async (languageCode: string) => {
     setSaving(true);
     try {
+      if (isParakeet && languageCode !== 'auto' && languageCode !== 'auto-translate' && languageCode !== 'en'
+        && !(await switchToMultilingualWhisper())) {
+        toast.warning('Download a multilingual Whisper model', {
+          description: 'Parakeet can\'t transcribe a chosen language. Install Whisper Base or Small in Settings → Speech model, then pick this language again.'
+        });
+        return;
+      }
       // Save language preference to localStorage and sync to backend
       setSelectedLanguage(languageCode);
       onLanguageChange(languageCode);
@@ -191,7 +209,7 @@ export function LanguageSelection({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {availableLanguages.map((language) => (
+            {LANGUAGES.map((language) => (
               <SelectItem key={language.code} value={language.code}>
                 {language.name}
                 {language.code !== 'auto' && language.code !== 'auto-translate' && (
@@ -207,8 +225,8 @@ export function LanguageSelection({
           <div className="flex gap-2.5 rounded-lg border border-af-border bg-af-panel-2 px-3 py-2.5 text-xs text-af-text-2">
             <Info className="mt-px h-4 w-4 shrink-0 text-af-text-3" />
             <div>
-              <p className="font-medium text-af-text">Parakeet detects the language itself</p>
-              <p className="mt-0.5">It can't be set to a particular language. Use Whisper if you need to choose one.</p>
+              <p className="font-medium text-af-text">Parakeet can't be set to one language</p>
+              <p className="mt-0.5">Picking another language switches live transcription to an installed multilingual Whisper model.</p>
             </div>
           </div>
         )}

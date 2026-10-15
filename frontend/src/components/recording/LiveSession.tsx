@@ -10,7 +10,6 @@ import { Copy, Globe, PanelRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
-import { useConfig } from '@/contexts/ConfigContext';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { usePendingGroup } from '@/hooks/usePendingGroup';
@@ -56,7 +55,6 @@ export function LiveSession({
     setMeetingTitle,
   } = useTranscripts();
   const { isRecording, isPaused } = useRecordingState();
-  const { transcriptModelConfig } = useConfig();
   const { groupById } = useWorkspace();
   const { meetings } = useSidebar();
   const [pendingGroup, chooseGroup] = usePendingGroup();
@@ -222,12 +220,10 @@ export function LiveSession({
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
-              {transcriptModelConfig.provider === 'localWhisper' && (
-                <Button variant="ghost" size="sm" onClick={onLanguageSettings}>
-                  <Globe />
-                  Language
-                </Button>
-              )}
+              <Button variant="ghost" size="sm" onClick={onLanguageSettings}>
+                <Globe />
+                Language
+              </Button>
               <Hint label="Copy transcript">
                 <Button variant="ghost" size="icon-sm" onClick={copyTranscript} disabled={transcripts.length === 0} aria-label="Copy transcript">
                   <Copy />

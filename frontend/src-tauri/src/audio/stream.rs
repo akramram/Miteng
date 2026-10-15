@@ -332,23 +332,46 @@ impl AudioStream {
                 info!("✅ Stream: Core Audio processing task started for {}", device_name);
 
                 let mut _sample_count = 0u64;
+                // The tap can pause callbacks while nothing is playing (e.g. the other side is silent
+                // or the output device idles). Fill those gaps with silence to keep the system track
+                // aligned with the mic, and only treat a long gap as a real stall.
+                const STALL_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+                const STALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+                let mut stalled_for = std::time::Duration::ZERO;
                 loop {
-                    let sample = match tokio::time::timeout(
-                        tokio::time::Duration::from_secs(5),
-                        stream.next(),
-                    )
-                    .await
-                    {
-                        Ok(Some(sample)) => sample,
+                    let sample = match tokio::time::timeout(STALL_POLL, stream.next()).await {
+                        Ok(Some(sample)) => {
+                            stalled_for = std::time::Duration::ZERO;
+                            sample
+                        }
                         Ok(None) => break,
                         Err(_) => {
-                            error!(
-                                "Core Audio stopped delivering callbacks for {}",
+                            stalled_for += STALL_POLL;
+                            if stalled_for >= STALL_LIMIT {
+                                error!(
+                                    "Core Audio stopped delivering callbacks for {} ({}s)",
+                                    device_name,
+                                    stalled_for.as_secs()
+                                );
+                                state_for_stream.report_error(AudioError::SystemCaptureStalled);
+                                terminal_error_reported = true;
+                                break;
+                            }
+                            warn!(
+                                "Core Audio idle for {}s on {}; inserting silence",
+                                stalled_for.as_secs(),
                                 device_name
                             );
-                            state_for_stream.report_error(AudioError::SystemCaptureStalled);
-                            terminal_error_reported = true;
-                            break;
+                            if !buffer.is_empty() {
+                                capture.process_audio_data(&buffer);
+                                buffer.clear();
+                                frame_count = 0;
+                            }
+                            let silence = vec![0.0f32; sample_rate as usize * STALL_POLL.as_secs() as usize];
+                            for chunk in silence.chunks(frames_per_chunk) {
+                                capture.process_audio_data(chunk);
+                            }
+                            continue;
                         }
                     };
                     let current_sample_rate = stream.sample_rate();
