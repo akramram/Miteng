@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use log::{debug as log_debug, error as log_error, info as log_info, warn as log_warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Emitter, Runtime};
 use tauri_plugin_store::StoreExt;
 
 use crate::{
@@ -816,7 +816,7 @@ pub async fn api_get_transcript_config<R: Runtime>(
 
 #[tauri::command]
 pub async fn api_save_transcript_config<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     provider: String,
     model: String,
@@ -846,6 +846,9 @@ pub async fn api_save_transcript_config<R: Runtime>(
     }
 
     log_info!("Successfully saved transcript configuration.");
+    // Every window's ConfigContext reloads on this, so the provider shown elsewhere
+    // (e.g. the language dialog) follows model changes made in Settings.
+    let _ = app.emit("transcript-config-changed", ());
     Ok(
         serde_json::json!({ "status": "success", "message": "Transcript configuration saved successfully" }),
     )

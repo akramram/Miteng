@@ -46,7 +46,7 @@ export function WelcomeStep() {
 
   return (
     <OnboardingContainer
-      title="Welcome to Meetily"
+      title="Welcome to Miteng"
       description="Record. Transcribe. Summarize. All on your device."
       step={1}
       hideProgress={true}
@@ -78,7 +78,7 @@ export function WelcomeStep() {
               <RefreshCw className="h-3.5 w-3.5 text-af-text-2" />
             </div>
             <div>
-              <h2 className="text-sm font-medium text-af-text">Check for updates when Meetily starts?</h2>
+              <h2 className="text-sm font-medium text-af-text">Check for updates when Miteng starts?</h2>
               <p className="mt-1 text-xs leading-relaxed text-af-text-3">
                 This checks this fork&apos;s GitHub releases. No analytics or usage data is sent.
               </p>

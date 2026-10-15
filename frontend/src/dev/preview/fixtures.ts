@@ -70,9 +70,9 @@ export const groups: PreviewGroup[] = [
 ];
 
 export const people: PreviewPerson[] = [
-  { id: 'person-priya', displayName: 'Priya Shah', role: 'Product Manager', company: 'Meetily', email: 'priya@example.com' },
-  { id: 'person-marcus', displayName: 'Marcus Lee', role: 'Staff Engineer', company: 'Meetily' },
-  { id: 'person-elena', displayName: 'Elena García', role: 'Design Lead', company: 'Meetily' },
+  { id: 'person-priya', displayName: 'Priya Shah', role: 'Product Manager', company: 'Miteng', email: 'priya@example.com' },
+  { id: 'person-marcus', displayName: 'Marcus Lee', role: 'Staff Engineer', company: 'Miteng' },
+  { id: 'person-elena', displayName: 'Elena García', role: 'Design Lead', company: 'Miteng' },
   { id: 'person-tom', displayName: 'Tom Becker', role: 'IT Director', company: 'Acme Corp', email: 'tom.becker@acme.test' },
   { id: 'person-sam', displayName: 'Sam Rivera', role: 'Procurement', company: 'Acme Corp' },
 ];

@@ -33,20 +33,20 @@ export function describeStartError(error: unknown): { title: string; message: st
   if (text.includes('microphone') || text.includes('mic') || text.includes('input')) {
     return {
       title: 'Microphone not available',
-      message: 'Check that the microphone is connected, that Meetily may use it, and that no other app has taken it.',
+      message: 'Check that the microphone is connected, that Miteng may use it, and that no other app has taken it.',
     };
   }
   if (text.includes('system audio') || text.includes('speaker') || text.includes('output')) {
     return {
       title: 'System audio not available',
       message:
-        'On macOS, allow Meetily Audio Capture in Privacy & Security, play some audio, and try again. Elsewhere, check the selected playback device.',
+        'On macOS, allow Miteng Audio Capture in Privacy & Security, play some audio, and try again. Elsewhere, check the selected playback device.',
     };
   }
   if (text.includes('permission')) {
     return {
       title: 'Permission needed',
-      message: 'Allow microphone access (and Audio Capture on macOS) in your system settings, then restart Meetily.',
+      message: 'Allow microphone access (and Audio Capture on macOS) in your system settings, then restart Miteng.',
     };
   }
   return { title: 'Could not start recording', message: 'Check your audio devices in the recording card and try again.' };
@@ -89,7 +89,7 @@ export function useRecordingStart(
     try {
       await invoke('check_transcription_runtime');
     } catch (error) {
-      const message = transcriptionRuntimeMessage(error) || 'Could not check the speech runtime. Restart Meetily and try again.';
+      const message = transcriptionRuntimeMessage(error) || 'Could not check the speech runtime. Restart Miteng and try again.';
       runtimeErrorRef.current = message;
       toast.error('Speech recognition unavailable', { description: message });
       return false;

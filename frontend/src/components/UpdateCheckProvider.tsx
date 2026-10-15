@@ -59,7 +59,7 @@ export function UpdateCheckProvider({
         if (status.reconfigurationRequired && reconfigurationUrl) {
           toast.warning('NVIDIA CUDA is ready', {
             id: 'cuda-reconfiguration-status',
-            description: `Rerun Meetily setup to replace the ${status.compiledBackend} build with the CUDA build.`,
+            description: `Rerun Miteng setup to replace the ${status.compiledBackend} build with the CUDA build.`,
             duration: 30000,
             action: {
               label: 'Download setup',
@@ -71,7 +71,7 @@ export function UpdateCheckProvider({
         } else if (status.driverUpdateRequired) {
           toast.warning('NVIDIA driver update recommended', {
             id: 'cuda-reconfiguration-status',
-            description: 'Install a current NVIDIA driver, then reopen Meetily to recheck CUDA support.',
+            description: 'Install a current NVIDIA driver, then reopen Miteng to recheck CUDA support.',
             duration: 30000,
             action: {
               label: 'Get driver',

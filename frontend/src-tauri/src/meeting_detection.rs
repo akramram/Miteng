@@ -142,7 +142,7 @@ struct MeetingEndedPayload {
     process: String,
 }
 
-/// True for our own process — never treat Meetily as a "meeting app".
+/// True for our own process — never treat Miteng as a "meeting app".
 fn is_self_process(name: &str) -> bool {
     let n = name.to_lowercase();
     n.contains("miteng") || n.contains("meetily")
@@ -153,7 +153,7 @@ fn is_self_process(name: &str) -> bool {
 ///
 /// On Windows, when CapabilityAccessManager reports mic/camera holders, we only
 /// alert if a *known* meeting app is among them. We never invent a name from a
-/// random exe (that produced the nonsense "Meetily meeting detected" toast when
+/// random exe (that produced the nonsense "Miteng meeting detected" toast when
 /// this app itself held the mic).
 fn scan_for_meeting_app(settings: &MeetingDetectionSettings) -> Option<(String, String, bool)> {
     use sysinfo::System;
@@ -217,7 +217,7 @@ fn scan_for_meeting_app(settings: &MeetingDetectionSettings) -> Option<(String, 
                 }
             }
         }
-        // CAM has holders but none are known meeting apps (e.g. only Meetily or
+        // CAM has holders but none are known meeting apps (e.g. only Miteng or
         // a browser). Do not fall through to process-only — that re-fires on idle
         // Zoom/Teams sitting in the tray.
         return None;
@@ -381,7 +381,7 @@ mod tests {
     fn browser_title_requires_meeting_context() {
         assert!(super::browser_title_is_meeting("Google Meet - Project Sync"));
         assert!(super::browser_title_is_meeting("Meeting | Microsoft Teams - Edge"));
-        assert!(!super::browser_title_is_meeting("Meetily documentation - Chrome"));
+        assert!(!super::browser_title_is_meeting("Miteng documentation - Chrome"));
         assert!(!super::browser_title_is_meeting("Microsoft Teams home - Edge"));
     }
 }

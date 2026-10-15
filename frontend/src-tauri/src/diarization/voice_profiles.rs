@@ -426,7 +426,7 @@ fn store_shares(person_id: &str, name: &str, shares: Vec<VoiceSource>, replace: 
     let profile = build_profile(person_id.to_string(), name.to_string(), merge_shares(earlier, shares))
         .map_err(|error| Meeting(error.to_string()))?;
     if existing.is_none() && profiles.len() >= MAX_PROFILES {
-        return Err(Unavailable(format!("Meetily keeps up to {MAX_PROFILES} voices. Forget one to learn another.")));
+        return Err(Unavailable(format!("Miteng keeps up to {MAX_PROFILES} voices. Forget one to learn another.")));
     }
     let info = profile.info();
     match existing {
@@ -494,7 +494,7 @@ pub async fn enroll_person_voice(
     Ok(store_shares(&person_id, &name, shares, meeting_id.is_none())?)
 }
 
-/// Voices Meetily knows, each under its contact's current name. A voice whose
+/// Voices Miteng knows, each under its contact's current name. A voice whose
 /// contact no longer exists is forgotten here.
 #[tauri::command]
 pub async fn list_voice_profiles(state: tauri::State<'_, crate::state::AppState>) -> Result<Vec<VoiceProfileInfo>, String> {

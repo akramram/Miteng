@@ -137,10 +137,7 @@ impl ParakeetEngine {
         if model_name.contains("-v2-") {
             vec!["https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main"]
         } else {
-            vec![
-                "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main",
-                "https://github.com/TylerBuza/Meetily-ActuallyFree/releases/download/parakeet-tdt-0.6b-v3-onnx",
-            ]
+            vec!["https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main"]
         }
     }
 
@@ -1055,13 +1052,10 @@ mod tests {
     }
 
     #[test]
-    fn v3_download_prefers_hugging_face_with_github_fallback() {
+    fn v3_download_uses_hugging_face() {
         assert_eq!(
             ParakeetEngine::download_base_urls("parakeet-tdt-0.6b-v3-int8"),
-            vec![
-                "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main",
-                "https://github.com/TylerBuza/Meetily-ActuallyFree/releases/download/parakeet-tdt-0.6b-v3-onnx",
-            ]
+            vec!["https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main"]
         );
     }
 

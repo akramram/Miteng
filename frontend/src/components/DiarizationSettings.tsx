@@ -52,7 +52,7 @@ function formatMB(bytes: number): string {
 /**
  * Speaker diarization status and configuration panel.
  * Supports choosing between Pyannote (bundled/lightweight) and NVIDIA Nemotron-3 (Sortformer v3).
- * Fully themed for both light and dark mode using Meetily semantic variables.
+ * Fully themed for both light and dark mode using Miteng semantic variables.
  */
 export function DiarizationSettings() {
   const [status, setStatus] = useState<DiarizationEngineStatus | null>(null);

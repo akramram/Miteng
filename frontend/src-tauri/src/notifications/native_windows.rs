@@ -108,7 +108,7 @@ fn register_aumid(icon: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Show a native toast attributed to Meetily, with a **Start recording** action.
+/// Show a native toast attributed to Miteng, with a **Start recording** action.
 /// Button (and body click) emit `start-recording-from-notification` so the UI
 /// can start capture the same way as the sidebar / in-app toast.
 pub fn show_toast<R: tauri::Runtime>(
@@ -125,7 +125,7 @@ pub fn show_toast<R: tauri::Runtime>(
     Toast::new(APP_USER_MODEL_ID)
         .title(title)
         .text1(body)
-        .text2("Tap Start recording to begin in Meetily.")
+        .text2("Tap Start recording to begin in Miteng.")
         .duration(Duration::Long)
         .add_button("Start recording", "start_recording")
         .on_activated(move |action| {

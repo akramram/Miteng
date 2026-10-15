@@ -18,7 +18,7 @@ export async function chooseCrashReportDestination(
   report: PendingCrashReport,
 ): Promise<string | null> {
   const destination = await save({
-    defaultPath: `Meetily-crash-${report.reportId.slice(0, 8)}.zip`,
+    defaultPath: `Miteng-crash-${report.reportId.slice(0, 8)}.zip`,
     filters: [{ name: 'ZIP archive', extensions: ['zip'] }],
   })
   if (!destination) return null
@@ -31,21 +31,4 @@ export async function createCrashReportZip(destination: string): Promise<string>
 
 export async function dismissCrashReport(): Promise<void> {
   await invoke('dismiss_pending_crash_report')
-}
-
-export async function openCrashReportIssue(report: PendingCrashReport): Promise<void> {
-  const title = 'Meetily crash report'
-  const body = [
-    '## Crash report',
-    '',
-    'Please attach the ZIP Meetily just created, then describe what was happening before the crash.',
-  ].join('\n')
-  const query = new URLSearchParams({
-    title,
-    body,
-  })
-
-  await invoke('open_external_url', {
-    url: `https://github.com/TylerBuza/Meetily-ActuallyFree/issues/new?${query.toString()}`,
-  })
 }

@@ -102,7 +102,7 @@ const inlineChunkErrorHandler = `
         var now = Date.now();
         if (!last || (now - parseInt(last, 10)) > 3000) {
           sessionStorage.setItem(RELOAD_KEY, String(now));
-          console.warn('[Meetily] ChunkLoadError detected in WebView2. Reloading in 300ms...');
+          console.warn('[Miteng] ChunkLoadError detected in WebView2. Reloading in 300ms...');
           setTimeout(function() {
             window.location.reload();
           }, 300);
@@ -340,7 +340,7 @@ export default function RootLayout({
 
         // In-app prompt with a one-click start action.
         toast(`${app} meeting detected`, {
-          description: 'Capture mic + system audio in Meetily.',
+          description: 'Capture mic + system audio in Miteng.',
           duration: 20000,
           action: {
             label: 'Start recording',

@@ -33,10 +33,10 @@ export function PermissionWarning({
     );
 
   const title = !hasMicrophone && !hasSystemAudio
-    ? 'Meetily can’t hear your microphone or computer audio'
+    ? 'Miteng can’t hear your microphone or computer audio'
     : !hasMicrophone
-      ? 'Meetily can’t hear your microphone'
-      : 'Meetily can’t record computer audio';
+      ? 'Miteng can’t hear your microphone'
+      : 'Miteng can’t record computer audio';
 
   return (
     <Alert variant="warning" className={className}>
@@ -45,7 +45,7 @@ export function PermissionWarning({
       <AlertDescription className="space-y-2 text-af-text-2">
         {!hasMicrophone && (
           <p>
-            No microphone was found. Check that one is connected, that Meetily is allowed to use it in your system settings, and that no other
+            No microphone was found. Check that one is connected, that Miteng is allowed to use it in your system settings, and that no other
             app has taken it over.
           </p>
         )}
@@ -54,7 +54,7 @@ export function PermissionWarning({
             {hasMicrophone
               ? 'You can still record your microphone, but the other side of the call won’t be captured.'
               : 'Computer audio capture is unavailable too.'}
-            {isMacOS && ' On macOS, allow Audio Capture for Meetily, play some audio, then check again. Restart Meetily if it stays silent.'}
+            {isMacOS && ' On macOS, allow Audio Capture for Miteng, play some audio, then check again. Restart Miteng if it stays silent.'}
           </p>
         )}
         <div className="flex flex-wrap gap-2 pt-1">

@@ -305,7 +305,7 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
                 </div>
               </div>
               <p className="text-center text-sm text-af-text-4">
-                Meetily will restart automatically when the update is installed.
+                Miteng will restart automatically when the update is installed.
               </p>
             </div>
           )}

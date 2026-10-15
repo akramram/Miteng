@@ -359,10 +359,10 @@ function handle(cmd: string, args: Args): unknown {
     case 'get_notification_settings':
       return notificationSettings;
     case 'get_database_directory':
-      return 'C:/Users/preview/AppData/Meetily';
+      return 'C:/Users/preview/AppData/Miteng';
     case 'whisper_get_models_directory':
     case 'parakeet_get_models_directory':
-      return 'C:/Users/preview/AppData/Meetily/models';
+      return 'C:/Users/preview/AppData/Miteng/models';
     case 'get_default_recordings_folder_path':
       return 'C:/Users/preview/Music/miteng-recordings';
     case 'get_ollama_models':
@@ -482,7 +482,7 @@ function handle(cmd: string, args: Args): unknown {
         ...engine,
         pyannote_available: true,
         current_available: engine.active_engine === 'pyannote' || engine.nemotron_available,
-        model_dir: 'C:\\Users\\you\\AppData\\Local\\Meetily\\models\\diarization',
+        model_dir: 'C:\\Users\\you\\AppData\\Local\\Miteng\\models\\diarization',
         nemotron_download_size: 382 * 1024 * 1024,
         pyannote_download_size: 33 * 1024 * 1024,
       };

@@ -34,7 +34,7 @@ export function PermissionsStep() {
         await invoke('open_system_settings');
       } catch {
         toast.info('Allow microphone access', {
-          description: 'Open System Settings → Privacy & Security → Microphone and turn on Meetily.',
+          description: 'Open System Settings → Privacy & Security → Microphone and turn on Miteng.',
         });
       }
       return;
@@ -68,7 +68,7 @@ export function PermissionsStep() {
         await invoke('open_system_settings');
       } catch {
         toast.info('Allow Audio Capture', {
-          description: 'Open System Settings → Privacy & Security → Audio Capture and turn on Meetily.',
+          description: 'Open System Settings → Privacy & Security → Audio Capture and turn on Miteng.',
         });
       }
       return;
@@ -119,7 +119,7 @@ export function PermissionsStep() {
   return (
     <OnboardingContainer
       title="Grant Permissions"
-      description="Meetily needs access to your microphone and system audio to record meetings"
+      description="Miteng needs access to your microphone and system audio to record meetings"
       step={4}
       hideProgress={true}
       showNavigation={allPermissionsGranted}

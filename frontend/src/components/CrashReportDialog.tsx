@@ -2,7 +2,7 @@
 import { Spinner } from '@/components/ui/spinner';
 
 import { useState, useEffect } from 'react'
-import { FileArchive, Send, ShieldCheck } from 'lucide-react'
+import { FileArchive, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
@@ -16,7 +16,6 @@ import {
   chooseCrashReportDestination,
   createCrashReportZip,
   dismissCrashReport,
-  openCrashReportIssue,
   type PendingCrashReport,
 } from '@/services/crashReportService'
 
@@ -25,7 +24,7 @@ interface CrashReportDialogProps {
   onResolved: () => void
 }
 
-type PendingAction = 'send' | 'save' | 'ignore' | null
+type PendingAction = 'save' | 'ignore' | null
 
 export default function CrashReportDialog({ report, onResolved }: CrashReportDialogProps) {
   const [mounted, setMounted] = useState(false)
@@ -50,7 +49,7 @@ export default function CrashReportDialog({ report, onResolved }: CrashReportDia
     } catch (error) {
       console.error('[CrashReport] Failed to persist dismissal:', error)
       toast.warning('The report could not be dismissed permanently', {
-        description: 'You can continue now, but Meetily may ask about it again next launch.',
+        description: 'You can continue now, but Miteng may ask about it again next launch.',
       })
     }
     onResolved()
@@ -71,24 +70,6 @@ export default function CrashReportDialog({ report, onResolved }: CrashReportDia
     }
   }
 
-  const handleSend = async () => {
-    setPendingAction('send')
-    try {
-      const destination = await createZip()
-      if (!destination) return
-      await openCrashReportIssue(report)
-      await finishDialog()
-      toast.success('Crash report ready to attach', {
-        description: 'GitHub opened with the report details. Attach the ZIP you just saved.',
-      })
-    } catch (error) {
-      console.error('[CrashReport] Failed to prepare report:', error)
-      toast.error('Could not prepare the crash report')
-    } finally {
-      setPendingAction(null)
-    }
-  }
-
   const handleIgnore = async () => {
     setPendingAction('ignore')
     try {
@@ -103,8 +84,8 @@ export default function CrashReportDialog({ report, onResolved }: CrashReportDia
     ? 'the previous session'
     : detected.toLocaleString()
   const description = report.crashType === 'panic'
-    ? 'Meetily encountered an internal error during the previous session.'
-    : 'Meetily did not shut down cleanly during the previous session.'
+    ? 'Miteng encountered an internal error during the previous session.'
+    : 'Miteng did not shut down cleanly during the previous session.'
 
   return (
     <Dialog open>
@@ -120,7 +101,7 @@ export default function CrashReportDialog({ report, onResolved }: CrashReportDia
               <ShieldCheck className="h-5 w-5" />
             </div>
             <DialogTitle className="text-xl text-[var(--af-text)]">
-              Meetily encountered a problem
+              Miteng encountered a problem
             </DialogTitle>
             <DialogDescription className="text-[var(--af-text-2)]">
               {description} Creating or ignoring this report does not include or modify meeting content.
@@ -145,27 +126,23 @@ export default function CrashReportDialog({ report, onResolved }: CrashReportDia
               What&apos;s included?
             </summary>
             <div className="mt-3 space-y-2 border-t border-[var(--af-border)] pt-3 text-xs leading-relaxed text-[var(--af-text-3)]">
-              <p>Crash time and type, Meetily version, coarse operating-system details, bucketed CPU core count, rounded memory size, acceleration backend, and source-relative panic file/line details with a location fingerprint when available.</p>
+              <p>Crash time and type, Miteng version, coarse operating-system details, bucketed CPU core count, rounded memory size, acceleration backend, and source-relative panic file/line details with a location fingerprint when available.</p>
               <p>No audio, recordings, transcripts, summaries, meeting names, database, settings, credentials, usernames, hostnames, or device names.</p>
             </div>
           </details>
 
           <p className="text-xs leading-relaxed text-[var(--af-text-3)]">
-            Send Report asks where to save the private ZIP, then opens a public GitHub issue. Opening GitHub contacts GitHub; the ZIP stays local until you choose it as an attachment, which uploads it before issue submission.
+            Save ZIP asks where to store the report on this computer. Nothing is sent anywhere.
           </p>
 
-          <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
             <Button variant="ghost" onClick={handleIgnore} disabled={busy}>
               {pendingAction === 'ignore' && <Spinner className="" />}
               Ignore
             </Button>
-            <Button variant="outline" onClick={handleSave} disabled={busy}>
+            <Button onClick={handleSave} disabled={busy}>
               {pendingAction === 'save' ? <Spinner className="" /> : <FileArchive />}
               Save ZIP
-            </Button>
-            <Button onClick={handleSend} disabled={busy}>
-              {pendingAction === 'send' ? <Spinner className="" /> : <Send />}
-              Send Report
             </Button>
           </div>
         </div>

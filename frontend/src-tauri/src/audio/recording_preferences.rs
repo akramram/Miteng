@@ -257,7 +257,7 @@ fn reject_path_inside_bundle(path: &Path, bundle_root: &Path) -> Result<()> {
 
     if candidate == bundle || candidate.starts_with(&bundle) {
         return Err(anyhow!(
-            "The recordings folder cannot be inside the Meetily app bundle. Choose a folder in Movies, Music, Documents, or another writable location."
+            "The recordings folder cannot be inside the Miteng app bundle. Choose a folder in Movies, Music, Documents, or another writable location."
         ));
     }
 
@@ -781,7 +781,7 @@ mod tests {
             "meetily-recording-path-test-{}-{unique}",
             std::process::id()
         ));
-        let bundle = root.join("Meetily.app");
+        let bundle = root.join("Miteng.app");
         let sibling = root.join("recordings");
         std::fs::create_dir_all(&bundle).unwrap();
 
@@ -805,7 +805,7 @@ mod tests {
             "meetily-recording-symlink-test-{}-{unique}",
             std::process::id()
         ));
-        let bundle = root.join("Meetily.app");
+        let bundle = root.join("Miteng.app");
         let executable_dir = bundle.join("Contents/MacOS");
         let link = root.join("app-executable-dir");
         std::fs::create_dir_all(&executable_dir).unwrap();
