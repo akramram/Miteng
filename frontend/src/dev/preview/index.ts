@@ -51,7 +51,7 @@ const state = {
     pyannote_threshold: 0.7,
   },
   recordingPrefs: {
-    save_folder: 'C:/Users/preview/Music/meetily-recordings',
+    save_folder: 'C:/Users/preview/Music/miteng-recordings',
     auto_save: true,
     file_format: 'mp4',
     preferred_mic_device: null as string | null,
@@ -364,7 +364,7 @@ function handle(cmd: string, args: Args): unknown {
     case 'parakeet_get_models_directory':
       return 'C:/Users/preview/AppData/Meetily/models';
     case 'get_default_recordings_folder_path':
-      return 'C:/Users/preview/Music/meetily-recordings';
+      return 'C:/Users/preview/Music/miteng-recordings';
     case 'get_ollama_models':
     case 'whisper_get_available_models':
     case 'builtin_ai_list_models':

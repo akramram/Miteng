@@ -145,7 +145,7 @@ struct MeetingEndedPayload {
 /// True for our own process — never treat Meetily as a "meeting app".
 fn is_self_process(name: &str) -> bool {
     let n = name.to_lowercase();
-    n.contains("meetily") || n.contains("meetily-actually")
+    n.contains("miteng") || n.contains("meetily")
 }
 
 /// Scan the process list once and, if a (non-ignored) meeting app is present,
@@ -353,8 +353,8 @@ mod tests {
 
     #[test]
     fn never_treats_meetily_as_a_meeting() {
-        assert!(is_self_process("meetily.exe"));
-        assert!(is_self_process("Meetily - Actually Free.exe"));
+        assert!(is_self_process("miteng.exe"));
+        assert!(is_self_process("Miteng.exe"));
         assert!(!is_self_process("ms-teams.exe"));
     }
 

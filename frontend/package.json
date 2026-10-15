@@ -1,5 +1,5 @@
 {
-    "name": "meetily",
+    "name": "miteng",
     "version": "0.2.21",
     "private": true,
     "main": "electron/main.js",

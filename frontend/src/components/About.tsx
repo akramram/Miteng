@@ -132,7 +132,7 @@ export function About() {
             {/* Footer - Compact */}
             <div className="pt-2 border-t border-af-border text-center">
                 <p className="text-xs text-af-text-4">
-                    Meetily - Actually Free · Open source (MIT)
+                    Miteng · fork of Meetily - Actually Free · Open source (MIT)
                 </p>
                 <p className="mt-1 text-xs text-af-text-3">
                     Tyler Buza ·{' '}
