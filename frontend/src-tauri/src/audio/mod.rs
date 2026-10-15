@@ -17,6 +17,7 @@ pub mod ffmpeg_mixer;  // NEW: FFmpeg-style adaptive audio mixer
 
 // New simplified audio system
 pub mod recording_state;
+pub mod echo_canceller; // Removes speaker echo from the mic using system audio as reference
 pub mod pipeline;
 pub mod stream;
 #[cfg(any(target_os = "macos", target_os = "windows", test))]

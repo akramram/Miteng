@@ -39,6 +39,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use super::echo_canceller::MicEchoCanceller;
 use super::audio_processing::{
     audio_to_mono, HighPassFilter, LoudnessNormalizer, NoiseSuppressionProcessor,
 };
@@ -1039,6 +1040,9 @@ pub struct AudioPipeline {
     /// so simultaneous talk never soft-limits one source into the other for STT.
     mic_vad: ContinuousVadProcessor,
     system_vad: ContinuousVadProcessor,
+    /// Removes speaker echo from the mic (system audio is the reference) before
+    /// VAD, the mic/system tracks and the mix. Delays both sources equally.
+    echo_canceller: MicEchoCanceller,
     sample_rate: u32,
     chunk_id_counter: u64,
     // Performance optimization: reduce logging frequency
@@ -1128,6 +1132,7 @@ impl AudioPipeline {
             state,
             mic_vad,
             system_vad,
+            echo_canceller: MicEchoCanceller::new(sample_rate),
             sample_rate,
             chunk_id_counter: 0,
             // Performance optimization: reduce logging frequency
@@ -1374,6 +1379,10 @@ impl AudioPipeline {
                         chunk.timestamp,
                     );
                     if let Some(start_seconds) = discontinuity_start {
+                        // The canceller still holds pre-gap audio: hand it to VAD
+                        // and the tracks before the VAD timeline jumps ahead.
+                        let (held_mic, held_sys) = self.echo_canceller.flush();
+                        self.dispatch_window(held_mic, held_sys, chunk.timestamp);
                         let mut completed = Vec::new();
                         if let Some(segment) = self.mic_vad.finalize_active_speech() {
                             completed.push((DeviceType::Microphone, segment));
@@ -1395,57 +1404,9 @@ impl AudioPipeline {
 
                     // STEP 2: Mix audio in fixed windows when both streams have sufficient data
                     while self.ring_buffer.can_mix() {
-            if let Some((mic_window, sys_window)) = self.ring_buffer.extract_window() {
-                            // STEP 3: Transcribe each source independently.
-                            // Same wall-clock windows (aligned by the ring buffer),
-                            // separate sample streams + VAD state — so when both
-                            // sides talk at once neither is soft-limited into the
-                            // other before Whisper, and device_type is exact.
-                            Self::emit_source_speech(
-                                &mut self.mic_vad,
-                                &mic_window,
-                                DeviceType::Microphone,
-                                &self.transcription_sender,
-                                &mut self.chunk_id_counter,
-                            );
-                            Self::emit_source_speech(
-                                &mut self.system_vad,
-                                &sys_window,
-                                DeviceType::System,
-                                &self.transcription_sender,
-                                &mut self.chunk_id_counter,
-                            );
-
-                            // STEP 4: Persist three tracks for offline diarization + playback.
-                            //   mic.mp4     → local user ("You")
-                            //   system.mp4  → remote / computer audio
-                            //   audio.mp4   → mixed playback (ducked)
-                            if let Some(ref sender) = self.recording_sender_for_mixed {
-                                let ts = chunk.timestamp;
-                                let sr = self.sample_rate;
-                                let _ = sender.send(AudioChunk {
-                                    data: mic_window.clone(),
-                                    sample_rate: sr,
-                                    timestamp: ts,
-                                    chunk_id: self.chunk_id_counter,
-                                    device_type: DeviceType::Microphone,
-                                });
-                                let _ = sender.send(AudioChunk {
-                                    data: sys_window.clone(),
-                                    sample_rate: sr,
-                                    timestamp: ts,
-                                    chunk_id: self.chunk_id_counter,
-                                    device_type: DeviceType::System,
-                                });
-                                let mixed = self.mixer.mix_window(&mic_window, &sys_window);
-                                let _ = sender.send(AudioChunk {
-                                    data: mixed,
-                                    sample_rate: sr,
-                                    timestamp: ts,
-                                    chunk_id: self.chunk_id_counter,
-                                    device_type: DeviceType::Mixed,
-                                });
-                            }
+                        if let Some((mic_window, sys_window)) = self.ring_buffer.extract_window() {
+                            let (mic, sys) = self.echo_canceller.process(&mic_window, &sys_window);
+                            self.dispatch_window(mic, sys, chunk.timestamp);
                         }
                     }
                 }
@@ -1475,6 +1436,53 @@ impl AudioPipeline {
         Ok(())
     }
 
+    /// STEPS 3-4 for one aligned, echo-cancelled mic/system pair.
+    fn dispatch_window(&mut self, mic_window: Vec<f32>, sys_window: Vec<f32>, timestamp: f64) {
+        if mic_window.is_empty() {
+            return;
+        }
+        // STEP 3: Transcribe each source independently. Same wall-clock windows,
+        // separate sample streams + VAD state, so device_type is exact. The mic
+        // is echo-cancelled, so remote speech heard through the speakers is not
+        // transcribed a second time as the local user.
+        Self::emit_source_speech(
+            &mut self.mic_vad,
+            &mic_window,
+            DeviceType::Microphone,
+            &self.transcription_sender,
+            &mut self.chunk_id_counter,
+        );
+        Self::emit_source_speech(
+            &mut self.system_vad,
+            &sys_window,
+            DeviceType::System,
+            &self.transcription_sender,
+            &mut self.chunk_id_counter,
+        );
+
+        // STEP 4: Persist three tracks for offline diarization + playback.
+        //   mic.mp4     → local user ("You"), echo-cancelled
+        //   system.mp4  → remote / computer audio
+        //   audio.mp4   → mixed playback (ducked)
+        if let Some(sender) = &self.recording_sender_for_mixed {
+            let chunk_id = self.chunk_id_counter;
+            let mixed = self.mixer.mix_window(&mic_window, &sys_window);
+            for (data, device_type) in [
+                (mic_window, DeviceType::Microphone),
+                (sys_window, DeviceType::System),
+                (mixed, DeviceType::Mixed),
+            ] {
+                let _ = sender.send(AudioChunk {
+                    data,
+                    sample_rate: self.sample_rate,
+                    timestamp,
+                    chunk_id,
+                    device_type,
+                });
+            }
+        }
+    }
+
     fn flush_remaining_audio(&mut self) -> Result<()> {
         info!(
             "Flushing remaining audio from pipeline (processed {} chunks)",
@@ -1482,41 +1490,13 @@ impl AudioPipeline {
         );
 
         while let Some((mic_window, sys_window)) = self.ring_buffer.extract_remaining() {
-            Self::emit_source_speech(
-                &mut self.mic_vad,
-                &mic_window,
-                DeviceType::Microphone,
-                &self.transcription_sender,
-                &mut self.chunk_id_counter,
-            );
-            Self::emit_source_speech(
-                &mut self.system_vad,
-                &sys_window,
-                DeviceType::System,
-                &self.transcription_sender,
-                &mut self.chunk_id_counter,
-            );
-
-            if let Some(sender) = &self.recording_sender_for_mixed {
-                let chunk_id = self.chunk_id_counter;
-                for (data, device_type) in [
-                    (mic_window.clone(), DeviceType::Microphone),
-                    (sys_window.clone(), DeviceType::System),
-                    (
-                        self.mixer.mix_window(&mic_window, &sys_window),
-                        DeviceType::Mixed,
-                    ),
-                ] {
-                    let _ = sender.send(AudioChunk {
-                        data,
-                        sample_rate: self.sample_rate,
-                        timestamp: 0.0,
-                        chunk_id,
-                        device_type,
-                    });
-                }
-            }
+            let (mic, sys) = self.echo_canceller.process(&mic_window, &sys_window);
+            self.dispatch_window(mic, sys, 0.0);
         }
+        // Return the audio the echo canceller holds back, or the end of the last
+        // utterance would never reach VAD or the recording.
+        let (held_mic, held_sys) = self.echo_canceller.flush();
+        self.dispatch_window(held_mic, held_sys, 0.0);
 
         crate::diarization::live_nemotron::finish();
         let mic_final = self.mic_vad.flush();
@@ -1753,7 +1733,9 @@ mod ring_buffer_tests {
                 DeviceType::Mixed => {}
             }
         }
-        assert_eq!(mic, [vec![0.1; 960], vec![0.3; 960]].concat());
+        // The mic track is echo-cancelled, so only its sample count is exact;
+        // the system track passes through the canceller unchanged.
+        assert_eq!(mic.len(), 2 * 960);
         assert_eq!(sys, [vec![0.2; 960], vec![0.4; 960]].concat());
     }
 
