@@ -38,6 +38,9 @@ pub struct Meeting {
     pub duration_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
+    /// The meeting this one continues (Part N-1 of the same series).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_meeting_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -383,14 +386,16 @@ pub async fn api_get_meetings<R: Runtime>(
             .into_iter()
             .filter_map(|(id, seconds)| seconds.map(|seconds| (id, seconds)))
             .collect();
-            let groups: HashMap<String, String> =
-                sqlx::query_as::<_, (String, Option<String>)>("SELECT id, group_id FROM meetings")
-                    .fetch_all(pool)
-                    .await
-                    .map_err(|e| format!("Failed to read meeting groups: {}", e))?
-                    .into_iter()
-                    .filter_map(|(id, group)| group.map(|group| (id, group)))
-                    .collect();
+            let links: HashMap<String, (Option<String>, Option<String>)> =
+                sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+                    "SELECT id, group_id, previous_meeting_id FROM meetings",
+                )
+                .fetch_all(pool)
+                .await
+                .map_err(|e| format!("Failed to read meeting groups: {}", e))?
+                .into_iter()
+                .map(|(id, group, previous)| (id, (group, previous)))
+                .collect();
 
             let mut result: Vec<Meeting> = Vec::with_capacity(meeting_models.len());
             for m in meeting_models {
@@ -407,9 +412,12 @@ pub async fn api_get_meetings<R: Runtime>(
                         .await
                         .map_err(|e| format!("Failed to repair meeting start time: {}", e))?;
                 }
+                let (group_id, previous_meeting_id) =
+                    links.get(&m.id).cloned().unwrap_or_default();
                 result.push(Meeting {
                     duration_seconds: durations.get(&m.id).copied(),
-                    group_id: groups.get(&m.id).cloned(),
+                    group_id,
+                    previous_meeting_id,
                     id: m.id,
                     title: m.title,
                     created_at: Some(created_at.to_rfc3339()),

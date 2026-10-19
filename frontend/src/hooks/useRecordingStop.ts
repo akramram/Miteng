@@ -15,6 +15,7 @@ import {
 } from '@/lib/summary-language-preferences';
 import { endLiveSession, finalLiveTitle, readLiveNotes, writeLiveTitle } from '@/lib/live-session';
 import { announceChange, saveMeetingNotes } from '@/lib/workspace-api';
+import { readPendingContinuation, setPreviousMeeting, writePendingContinuation } from '@/lib/meeting-series';
 import { endAutomatedRecording } from '@/lib/meeting-automation';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
@@ -275,6 +276,18 @@ export function useRecordingStop(
 
           const meetingId = responseData.meeting_id;
           if (meetingId) {
+            // Link to the meeting this recording continues before the list reloads.
+            const continues = readPendingContinuation();
+            if (continues) {
+              try {
+                await setPreviousMeeting(meetingId, continues);
+              } catch (error) {
+                toast.warning('This meeting was not linked as a continuation', {
+                  description: error instanceof Error ? error.message : String(error),
+                });
+              }
+              writePendingContinuation(null);
+            }
             // Saving turns names given during the call into contacts; the
             // contact list is loaded once, so tell every screen to reload it.
             announceChange('people');

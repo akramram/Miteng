@@ -47,6 +47,7 @@ import { cn } from '@/lib/utils';
 import { dateSection, formatClock, formatDuration, formatShortDate, formatTime, parseDate } from '@/lib/dates';
 import { displayTitle } from '@/lib/meeting-titles';
 import { writePendingGroup } from '@/lib/groups';
+import { partPositions, type PartPosition } from '@/lib/meeting-series';
 import { deleteMeetings, moveMeetingsToGroup, renameMeeting } from '@/lib/meeting-actions';
 import { groupColorVar } from '@/lib/group-colors';
 import { createGroupFromPicker, GroupDot, groupOptions } from '@/components/groups/GroupBits';
@@ -152,6 +153,7 @@ const Sidebar: React.FC = () => {
   const elapsed = useRecordingClock();
   const { openImportDialog } = useImportDialog();
   const { groups, groupById } = useWorkspace();
+  const parts = useMemo(() => partPositions(meetings), [meetings]);
   const expanded = !isCollapsed;
 
   const [groupBy, setGroupBy] = useStoredGroupBy();
@@ -571,6 +573,7 @@ const Sidebar: React.FC = () => {
                       key={meeting.id}
                       meeting={meeting}
                       groupName={groupBy === 'date' ? groupById(meeting.group_id)?.name ?? null : null}
+                      part={parts.get(meeting.id)}
                       showTimeOnly={groupBy === 'date' && (section.title === 'Today' || section.title === 'Yesterday')}
                       active={meeting.id === activeMeetingId}
                       selected={selectedIds.has(meeting.id)}
@@ -705,6 +708,8 @@ interface MeetingRowProps {
   meeting: CurrentMeeting;
   /** Shown in the details line when meetings are listed by date. */
   groupName?: string | null;
+  /** Position in a series of continued meetings, if any. */
+  part?: PartPosition;
   showTimeOnly: boolean;
   active: boolean;
   selected: boolean;
@@ -722,6 +727,7 @@ interface MeetingRowProps {
 function MeetingRow({
   meeting,
   groupName,
+  part,
   showTimeOnly,
   active,
   selected,
@@ -738,7 +744,12 @@ function MeetingRow({
   const { groups } = useWorkspace();
   const date = parseDate(meeting.created_at);
   const title = displayTitle(meeting.title, meeting.created_at);
-  const meta = [groupName, date ? (showTimeOnly ? formatTime(date) : formatShortDate(date)) : null, formatDuration(meeting.duration_seconds) || null]
+  const meta = [
+    part ? `Part ${part.part}/${part.total}` : null,
+    groupName,
+    date ? (showTimeOnly ? formatTime(date) : formatShortDate(date)) : null,
+    formatDuration(meeting.duration_seconds) || null,
+  ]
     .filter(Boolean)
     .join(' · ');
   const [draft, setDraft] = useState(title);

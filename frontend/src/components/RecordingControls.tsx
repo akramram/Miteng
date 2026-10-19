@@ -28,6 +28,8 @@ import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { usePlatform } from '@/hooks/usePlatform';
 import { usePendingGroup } from '@/hooks/usePendingGroup';
+import { usePendingContinuation } from '@/hooks/usePendingContinuation';
+import { ContinuationPicker } from '@/components/meeting/MeetingSeries';
 import { deviceDisplayName, UNAVAILABLE_DEVICE_VALUE, type AudioDeviceOption } from '@/lib/audio-devices';
 import type { RecordingPreferences } from '@/components/RecordingSettings';
 import type { SelectedDevices } from '@/components/DeviceSelection';
@@ -83,6 +85,12 @@ function NextGroupPicker() {
       }
     />
   );
+}
+
+/** "Continue a meeting ▾": the earlier meeting the next recording carries on from. */
+function NextContinuationPicker() {
+  const [pending, choose] = usePendingContinuation();
+  return <ContinuationPicker meetingId={null} value={pending} onChange={choose} variant="line" side="top" />;
 }
 
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
@@ -489,7 +497,10 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             ) : busy ? (
               <div className="max-w-[11rem] truncate text-[11px] text-af-text-3">{startupMessage || 'One moment'}</div>
             ) : (
-              <NextGroupPicker />
+              <>
+                <NextGroupPicker />
+                <NextContinuationPicker />
+              </>
             )}
           </div>
 

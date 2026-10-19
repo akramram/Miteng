@@ -11,6 +11,7 @@ export interface PreviewMeeting {
   created_at: string;
   duration_seconds: number;
   group_id: string | null;
+  previous_meeting_id?: string | null;
   folder_path: string;
 }
 
@@ -81,7 +82,7 @@ const thursday = lastWeekday(4);
 
 export const meetings: PreviewMeeting[] = [
   { id: 'meeting-standup-0', title: `Weekly Standup — ${short(at(thursday, 12))}`, created_at: at(thursday, 12, 2), duration_seconds: 1_140, group_id: 'group-standup', folder_path: '/preview/standup-0' },
-  { id: 'meeting-acme-review', title: 'Acme pilot security review', created_at: at(0, 9, 30), duration_seconds: 2_710, group_id: 'group-acme', folder_path: '/preview/acme-review' },
+  { id: 'meeting-acme-review', title: 'Acme pilot security review', created_at: at(0, 9, 30), duration_seconds: 2_710, group_id: 'group-acme', folder_path: '/preview/acme-review', previous_meeting_id: 'meeting-acme-kickoff' },
   { id: 'meeting-roadmap', title: 'Q4 roadmap planning', created_at: at(1, 15, 5), duration_seconds: 3_420, group_id: null, folder_path: '/preview/roadmap' },
   { id: 'meeting-design-crit', title: 'Onboarding flow critique', created_at: at(2, 11, 0), duration_seconds: 1_980, group_id: 'group-design', folder_path: '/preview/design-crit' },
   { id: 'meeting-standup-1', title: `Weekly Standup — ${short(at(thursday + 7, 12))}`, created_at: at(thursday + 7, 12, 1), duration_seconds: 1_260, group_id: 'group-standup', folder_path: '/preview/standup-1' },

@@ -13,6 +13,8 @@ import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { usePendingGroup } from '@/hooks/usePendingGroup';
+import { usePendingContinuation } from '@/hooks/usePendingContinuation';
+import { ContinuationPicker } from '@/components/meeting/MeetingSeries';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { SpeakerIdentityDialog } from '@/components/people/SpeakerIdentityDialog';
 import { GroupPicker } from '@/components/groups/GroupBits';
@@ -56,6 +58,7 @@ export function LiveSession({
   const { groupById } = useWorkspace();
   const { meetings } = useSidebar();
   const [pendingGroup, chooseGroup] = usePendingGroup();
+  const [pendingContinuation, chooseContinuation] = usePendingContinuation();
   const elapsed = useRecordingClock();
 
   const [live, setLive] = useState<LiveTitle | null>(null);
@@ -198,6 +201,7 @@ export function LiveSession({
                   <span className="tabular-nums text-af-text-3">{formatClock(elapsed)}</span>
                 </span>
                 <GroupPicker value={pendingGroup?.id ?? null} onChange={changeGroup} placeholder="Add to group" />
+                <ContinuationPicker meetingId={null} value={pendingContinuation} onChange={chooseContinuation} />
                 {detectedSpeakers.length > 0 && (
                   <button
                     type="button"

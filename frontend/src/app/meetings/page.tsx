@@ -53,6 +53,7 @@ import { ExportMeetingsDialog } from '@/components/meetings/ExportMeetingsDialog
 import { dateSection, formatDuration, parseDate } from '@/lib/dates';
 import { displayTitle } from '@/lib/meeting-titles';
 import { deleteMeetings, moveMeetingsToGroup, renameMeeting } from '@/lib/meeting-actions';
+import { partPositions, type PartPosition } from '@/lib/meeting-series';
 import { onWorkspaceChange } from '@/lib/workspace-api';
 import type { PersonProfile } from '@/types';
 
@@ -75,6 +76,7 @@ export default function MeetingsPage() {
   const router = useRouter();
   const { meetings, setCurrentMeeting, currentMeeting } = useSidebar();
   const { groups, groupById, people } = useWorkspace();
+  const parts = useMemo(() => partPositions(meetings), [meetings]);
   const { openImportDialog } = useImportDialog();
 
   const [query, setQuery] = useState('');
@@ -384,6 +386,7 @@ export default function MeetingsPage() {
                     {section.meetings.map((meeting) => (
                       <LibraryRow
                         key={meeting.id}
+                        part={parts.get(meeting.id)}
                         meeting={meeting}
                         selected={selected.has(meeting.id)}
                         selecting={selecting}
@@ -472,6 +475,7 @@ export default function MeetingsPage() {
 
 function LibraryRow({
   meeting,
+  part,
   selected,
   selecting,
   renaming,
@@ -484,6 +488,7 @@ function LibraryRow({
   onDelete,
 }: {
   meeting: CurrentMeeting;
+  part?: PartPosition;
   selected: boolean;
   selecting: boolean;
   renaming: boolean;
@@ -549,8 +554,9 @@ function LibraryRow({
             className="af-bare h-7 w-full rounded-md !border !border-af-accent !bg-af-panel-2 px-2 text-[13px] text-af-text outline-none"
           />
         ) : (
-          <p className="truncate text-[13px] font-medium text-af-text" title={title}>
-            {title}
+          <p className="flex min-w-0 items-baseline gap-2 text-[13px] font-medium text-af-text" title={title}>
+            <span className="truncate">{title}</span>
+            {part && <span className="shrink-0 text-[11px] font-normal tabular-nums text-af-text-3">Part {part.part}/{part.total}</span>}
           </p>
         )}
         <p className="truncate text-[11px] text-af-text-4 sm:hidden">

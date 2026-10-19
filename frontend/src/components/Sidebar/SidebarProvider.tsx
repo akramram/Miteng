@@ -26,6 +26,8 @@ export interface CurrentMeeting {
   /** Approx length in seconds (from transcript timings). */
   duration_seconds?: number;
   group_id?: string | null;
+  /** The meeting this one continues (see lib/meeting-series). */
+  previous_meeting_id?: string | null;
 }
 
 interface SidebarContextType {
@@ -116,6 +118,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
           created_at?: string;
           duration_seconds?: number;
           group_id?: string | null;
+          previous_meeting_id?: string | null;
         }>;
         const transformedMeetings = meetings.map((meeting) => ({
           id: meeting.id,
@@ -123,6 +126,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
           created_at: meeting.created_at ?? (meeting as any).createdAt ?? (meeting as any).updated_at,
           duration_seconds: meeting.duration_seconds,
           group_id: meeting.group_id ?? null,
+          previous_meeting_id: meeting.previous_meeting_id ?? null,
         }));
         setMeetings(transformedMeetings);
         Analytics.trackBackendConnection(true);

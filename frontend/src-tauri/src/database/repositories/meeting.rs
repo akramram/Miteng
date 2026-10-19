@@ -556,6 +556,12 @@ async fn delete_meeting_with_transaction(
         return Ok(false);
     }
 
+    crate::database::repositories::meeting_series::MeetingSeriesRepository::detach(
+        &mut *transaction,
+        meeting_id,
+    )
+    .await?;
+
     // Delete from related tables in proper order
     // Do not rely on SQLite FK enforcement: portable/legacy databases may have
     // opened connections before foreign_keys was enabled.

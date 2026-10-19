@@ -1,6 +1,7 @@
 pub mod action_item;
 pub mod group;
 pub mod meeting;
+pub mod meeting_series;
 pub mod meeting_notes;
 pub mod person;
 pub mod setting;

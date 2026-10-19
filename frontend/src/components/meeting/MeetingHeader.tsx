@@ -38,6 +38,7 @@ import { Input } from '@/components/ui/input';
 import { EditableTitle } from '@/components/ui/editable-title';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { GroupPicker } from '@/components/groups/GroupBits';
+import { MeetingSeriesControl } from '@/components/meeting/MeetingSeries';
 import { RetranscribeDialog } from '@/components/MeetingDetails/RetranscribeDialog';
 import { useConfig } from '@/contexts/ConfigContext';
 import { formatDuration, parseDate } from '@/lib/dates';
@@ -151,6 +152,7 @@ export function MeetingHeader({
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-af-text-3">
             {when && <span className="tabular-nums">{when}</span>}
             {durationSeconds ? <span className="tabular-nums">{formatDuration(durationSeconds)}</span> : null}
+            <MeetingSeriesControl meetingId={meetingId} />
             <GroupPicker value={groupId} onChange={onGroupChange} placeholder="Add to group" />
           </div>
           {uniquePeople.length > 0 && (

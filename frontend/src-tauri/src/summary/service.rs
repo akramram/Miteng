@@ -1,5 +1,8 @@
 use crate::database::repositories::{
-    meeting::MeetingsRepository, setting::SettingsRepository, summary::SummaryProcessesRepository,
+    meeting::MeetingsRepository,
+    meeting_series::{MeetingSeriesRepository, PreviousPart},
+    setting::SettingsRepository,
+    summary::SummaryProcessesRepository,
 };
 use crate::summary::llm_client::LLMProvider;
 use crate::summary::language_detection::detect_summary_language;
@@ -32,6 +35,28 @@ pub(crate) struct SummaryRunRegistration {
 // Global registry for active summary runs (thread-safe)
 static CANCELLATION_REGISTRY: Lazy<Arc<Mutex<HashMap<String, SummaryRunRegistration>>>> =
     Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+
+/// Longest previous-part summary passed as context; summaries are normally far shorter.
+const PREVIOUS_PART_MAX_CHARS: usize = 12_000;
+
+fn with_previous_part(custom_prompt: &str, part: &PreviousPart) -> String {
+    let mut context = format!(
+        "This meeting continues an earlier session, \"{}\". Summarize THIS transcript; \
+         mention earlier points only where this session builds on, changes, or resolves them.",
+        part.title
+    );
+    if let Some(summary) = &part.summary {
+        let summary: String = summary.chars().take(PREVIOUS_PART_MAX_CHARS).collect();
+        context.push_str("\n\n<previous_part_summary>\n");
+        context.push_str(&summary);
+        context.push_str("\n</previous_part_summary>");
+    }
+    if !custom_prompt.trim().is_empty() {
+        context.push_str("\n\n");
+        context.push_str(custom_prompt);
+    }
+    context
+}
 
 /// Strips the first `#` heading line; returns "" if no `#` is found.
 fn strip_leading_title(markdown: &str) -> String {
@@ -553,6 +578,17 @@ impl SummaryService {
             }
         };
         let template_fingerprint = template_cache_fingerprint(&template);
+
+        // A continuation is summarized with the previous part's summary as context.
+        // It joins the user context, so the cache fingerprint covers it too.
+        let custom_prompt = match MeetingSeriesRepository::previous_part(&pool, &meeting_id).await {
+            Ok(Some(part)) => with_previous_part(&custom_prompt, &part),
+            Ok(None) => custom_prompt,
+            Err(e) => {
+                warn!("Failed to load previous part for meeting_id={}: {}", meeting_id, e);
+                custom_prompt
+            }
+        };
 
         let cache_source = build_summary_cache_source(
             &text,

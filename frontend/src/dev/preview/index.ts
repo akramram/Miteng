@@ -539,7 +539,7 @@ function handle(cmd: string, args: Args): unknown {
     case 'api_get_meetings':
       return [...state.meetings]
         .sort((a, b) => b.created_at.localeCompare(a.created_at))
-        .map((entry) => ({ id: entry.id, title: entry.title, created_at: entry.created_at, duration_seconds: entry.duration_seconds, group_id: entry.group_id }));
+        .map((entry) => ({ id: entry.id, title: entry.title, created_at: entry.created_at, duration_seconds: entry.duration_seconds, group_id: entry.group_id, previous_meeting_id: entry.previous_meeting_id ?? null }));
     case 'api_get_meeting_metadata': {
       const entry = meeting(args.meetingId);
       if (!entry) throw new Error('Meeting not found');
@@ -598,10 +598,13 @@ function handle(cmd: string, args: Args): unknown {
       if (entry) entry.title = args.title;
       return null;
     }
-    case 'api_delete_meeting':
+    case 'api_delete_meeting': {
+      const removed = meeting(args.meetingId);
       state.meetings = state.meetings.filter((entry) => entry.id !== args.meetingId);
+      for (const entry of state.meetings) if (entry.previous_meeting_id === args.meetingId) entry.previous_meeting_id = removed?.previous_meeting_id ?? null;
       state.actionItems = state.actionItems.filter((item) => item.meetingId !== args.meetingId);
       return null;
+    }
     case 'api_set_meetings_group':
       for (const entry of state.meetings) {
         if ((args.meetingIds as string[]).includes(entry.id)) entry.group_id = args.groupId ?? null;
@@ -681,6 +684,19 @@ function handle(cmd: string, args: Args): unknown {
     case 'api_set_meeting_group': {
       const entry = meeting(args.meetingId);
       if (entry) entry.group_id = args.groupId ?? null;
+      return null;
+    }
+    case 'api_set_previous_meeting': {
+      const previous = args.previousMeetingId ?? null;
+      if (previous) {
+        for (let cursor: string | null | undefined = previous; cursor; cursor = meeting(cursor)?.previous_meeting_id) {
+          if (cursor === args.meetingId) throw new Error('That meeting is already a later part of this series');
+        }
+        const taken = state.meetings.find((entry) => entry.previous_meeting_id === previous && entry.id !== args.meetingId);
+        if (taken) throw new Error(`That meeting is already continued by "${taken.title}"`);
+      }
+      const entry = meeting(args.meetingId);
+      if (entry) entry.previous_meeting_id = previous;
       return null;
     }
 
