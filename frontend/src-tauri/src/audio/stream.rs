@@ -28,6 +28,77 @@ use super::capture::CoreAudioCapture;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::recording_state::AudioError;
 
+/// Notices a Core Audio tap that has gone deaf: it keeps delivering (near)
+/// silence while other apps are playing. Seen in a real call after Pause and
+/// Resume: the tap stayed registered but stopped receiving the call for over an
+/// hour, and only a rebuilt tap (or an output device change) brought it back.
+#[cfg(target_os = "macos")]
+struct TapWatch {
+    last_audible: std::time::Instant,
+    last_check: std::time::Instant,
+    summary_start: std::time::Instant,
+    summary_peak: f32,
+    summary_samples: u64,
+    summary_zeros: u64,
+}
+
+#[cfg(target_os = "macos")]
+impl TapWatch {
+    /// −60 dBFS. A working call is never this quiet for a whole minute.
+    const AUDIBLE: f32 = 0.001;
+    const DEAF_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+    const RECHECK: std::time::Duration = std::time::Duration::from_secs(10);
+    const SUMMARY_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
+
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            last_audible: now,
+            last_check: now,
+            summary_start: now,
+            summary_peak: 0.0,
+            summary_samples: 0,
+            summary_zeros: 0,
+        }
+    }
+
+    /// Records one block from the tap; true when the tap should be rebuilt.
+    fn observe(&mut self, block: &[f32], device_name: &str) -> bool {
+        let now = std::time::Instant::now();
+        let peak = block.iter().fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        self.summary_peak = self.summary_peak.max(peak);
+        self.summary_samples += block.len() as u64;
+        self.summary_zeros += block.iter().filter(|sample| **sample == 0.0).count() as u64;
+        if peak >= Self::AUDIBLE {
+            self.last_audible = now;
+        }
+        if now.duration_since(self.summary_start) >= Self::SUMMARY_EVERY {
+            info!(
+                "System audio on {} over {}s: peak {:.1} dBFS, {:.0}% exact zeros",
+                device_name,
+                now.duration_since(self.summary_start).as_secs(),
+                20.0 * self.summary_peak.max(1e-9).log10(),
+                100.0 * self.summary_zeros as f64 / self.summary_samples.max(1) as f64
+            );
+            self.summary_start = now;
+            self.summary_peak = 0.0;
+            self.summary_samples = 0;
+            self.summary_zeros = 0;
+        }
+        if now.duration_since(self.last_audible) < Self::DEAF_AFTER
+            || now.duration_since(self.last_check) < Self::RECHECK
+        {
+            return false;
+        }
+        self.last_check = now;
+        super::capture::core_audio::another_app_is_playing()
+    }
+
+    fn rebuilt(&mut self) {
+        self.last_audible = std::time::Instant::now();
+    }
+}
+
 /// Stream backend implementation
 pub enum StreamBackend {
     /// CPAL-based stream (ScreenCaptureKit or default)
@@ -316,6 +387,7 @@ impl AudioStream {
         // Spawn task to process Core Audio stream samples
         // The stream needs to be polled continuously to produce samples
         let device_name = device.name.clone();
+        let target_pids = target_pids.to_vec();
         info!("🔊 Stream: Spawning tokio task to poll Core Audio stream...");
         let task = tokio::spawn({
             let capture = capture.clone();
@@ -338,6 +410,7 @@ impl AudioStream {
                 const STALL_POLL: std::time::Duration = std::time::Duration::from_secs(5);
                 const STALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
                 let mut stalled_for = std::time::Duration::ZERO;
+                let mut watch = TapWatch::new();
                 loop {
                     let sample = match tokio::time::timeout(STALL_POLL, stream.next()).await {
                         Ok(Some(sample)) => {
@@ -394,6 +467,26 @@ impl AudioStream {
 
                     // Process when we have enough samples
                     if frame_count >= frames_per_chunk {
+                        if watch.observe(&buffer, &device_name) && target_pids.is_empty() {
+                            warn!(
+                                "System audio silent for {}s on {} while another app is playing; rebuilding the Core Audio tap",
+                                TapWatch::DEAF_AFTER.as_secs(),
+                                device_name
+                            );
+                            match CoreAudioCapture::new_with_processes(&target_pids).and_then(CoreAudioCapture::stream) {
+                                Ok(fresh) if fresh.sample_rate() == sample_rate => {
+                                    stream = fresh;
+                                    info!("Core Audio tap rebuilt for {}", device_name);
+                                }
+                                Ok(fresh) => warn!(
+                                    "Rebuilt Core Audio tap runs at {} Hz, not {} Hz; keeping the current tap",
+                                    fresh.sample_rate(),
+                                    sample_rate
+                                ),
+                                Err(e) => warn!("Could not rebuild the Core Audio tap: {}", e),
+                            }
+                            watch.rebuilt();
+                        }
                         capture.process_audio_data(&buffer);
                         buffer.clear();
                         frame_count = 0;

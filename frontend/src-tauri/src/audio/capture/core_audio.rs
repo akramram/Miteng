@@ -77,6 +77,20 @@ fn app_process_objects(
         .collect()
 }
 
+/// Whether an app other than Miteng is sending audio to an output device now.
+#[cfg(target_os = "macos")]
+pub fn another_app_is_playing() -> bool {
+    let own_pid = std::process::id() as i32;
+    ca::Process::list()
+        .map(|processes| {
+            processes.iter().any(|process| {
+                process.pid().is_ok_and(|pid| pid != own_pid)
+                    && process.is_running_output().unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(target_os = "macos")]
 impl CoreAudioCapture {
     /// Create a new Core Audio capture for system audio
