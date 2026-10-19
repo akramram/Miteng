@@ -97,8 +97,10 @@ const STATS_LOG_INTERVAL_FRAMES: u64 = 6_000;
 pub struct MicEchoCanceller {
     /// `None` once the processor has failed: the mic then passes through.
     processor: Option<AudioProcessing>,
-    /// Stands in for AEC3's processing delay after a fallback to passthrough.
-    passthrough_delay: VecDeque<f32>,
+    /// The mic input delayed by AEC3's processing latency, so it lines up with
+    /// the cleaned output: passed through after a failure, and used to keep
+    /// digital silence (a muted mic) silent.
+    input_delay: VecDeque<f32>,
     /// Samples per 10ms frame, the only frame size AEC3 accepts.
     frame_len: usize,
     /// Mic samples the reference is fed ahead by; a whole number of frames.
@@ -146,7 +148,7 @@ impl MicEchoCanceller {
 
         let mut canceller = Self {
             processor: Some(processor),
-            passthrough_delay: VecDeque::new(),
+            input_delay: std::iter::repeat(0.0).take(sample_rate as usize * PROCESSING_LATENCY_MS / 1000).collect(),
             frame_len,
             lead_samples: lead_frames * frame_len,
             latency_samples: sample_rate as usize * PROCESSING_LATENCY_MS / 1000,
@@ -254,15 +256,16 @@ impl MicEchoCanceller {
                     e
                 );
                 self.processor = None;
-                self.passthrough_delay =
-                    std::iter::repeat(0.0).take(self.latency_samples).collect();
             }
         }
-        if self.processor.is_none() {
-            self.passthrough_delay
-                .extend(self.capture_frame.iter().copied());
-            for sample in self.cleaned_frame.iter_mut() {
-                *sample = self.passthrough_delay.pop_front().unwrap_or(0.0);
+        // AEC3 adds comfort noise to input it suppressed, so a muted mic (exact
+        // zeros) would come back as faint noise that VAD and Whisper then
+        // "hear" as speech. Input that is exactly zero stays exactly zero.
+        self.input_delay.extend(self.capture_frame.iter().copied());
+        let passthrough = self.processor.is_none();
+        for (sample, input) in self.cleaned_frame.iter_mut().zip(self.input_delay.drain(..self.frame_len)) {
+            if passthrough || input == 0.0 {
+                *sample = input;
             }
         }
 
@@ -407,6 +410,20 @@ mod tests {
         let start = far.len();
         let db = reduction_db(&near, &cleaned[start..start + near.len()]);
         assert!(db < 3.0, "local speech lost {:.1} dB after convergence", db);
+    }
+
+    #[test]
+    fn muted_mic_stays_digital_silence_while_the_far_end_talks() {
+        // A muted mic arrives as exact zeros. Any noise AEC3 adds to it reaches
+        // VAD and Whisper, which then "hears" phrases in the muted track.
+        let system = speech_like(12.0, 7);
+        let mut mic = room_echo(&system, 0);
+        let muted_from = 6 * RATE as usize;
+        mic[muted_from..].fill(0.0);
+        let mut canceller = MicEchoCanceller::new(RATE);
+        let (cleaned, _) = run(&mut canceller, &mic, &system);
+        let leaked = cleaned[muted_from..].iter().filter(|&&x| x != 0.0).count();
+        assert_eq!(leaked, 0, "{} non-zero samples in the muted span", leaked);
     }
 
     #[test]

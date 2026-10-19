@@ -269,25 +269,25 @@ impl AudioStream {
         device_type: DeviceType,
         recording_sender: Option<mpsc::UnboundedSender<super::recording_state::AudioChunk>>,
     ) -> Result<Self> {
-        Self::create_core_audio_stream_with_process(device, state, device_type, recording_sender, None).await
+        Self::create_core_audio_stream_with_process(device, state, device_type, recording_sender, &[]).await
     }
 
-    /// Create a Core Audio stream optionally targeting a specific process PID (macOS only)
+    /// Create a Core Audio stream of the given apps' processes, or of all computer audio when empty (macOS only)
     #[cfg(target_os = "macos")]
     async fn create_core_audio_stream_with_process(
         device: Arc<AudioDevice>,
         state: Arc<RecordingState>,
         device_type: DeviceType,
         recording_sender: Option<mpsc::UnboundedSender<super::recording_state::AudioChunk>>,
-        target_pid: Option<u32>,
+        target_pids: &[u32],
     ) -> Result<Self> {
-        info!("🔊 Stream: Creating Core Audio stream (target_pid: {:?}) for device: {}", target_pid, device.name);
+        info!("🔊 Stream: Creating Core Audio stream (target_pids: {:?}) for device: {}", target_pids, device.name);
 
         // Create Core Audio capture
-        info!("🔊 Stream: Calling CoreAudioCapture::new_with_process()...");
-        let capture_impl = CoreAudioCapture::new_with_process(target_pid)
+        info!("🔊 Stream: Calling CoreAudioCapture::new_with_processes()...");
+        let capture_impl = CoreAudioCapture::new_with_processes(target_pids)
             .map_err(|e| {
-                error!("❌ Stream: CoreAudioCapture::new_with_process failed: {}", e);
+                error!("❌ Stream: CoreAudioCapture::new_with_processes failed: {}", e);
                 anyhow::anyhow!("Failed to create Core Audio capture: {}", e)
             })?;
 
@@ -437,11 +437,6 @@ impl AudioStream {
         anyhow::ensure!(!NATIVE_CLEANUPS.is_pending(),
             "Previous Windows audio cleanup is still running; retry recording shortly");
 
-        #[cfg(target_os = "macos")]
-        if targets.len() > 1 {
-            anyhow::bail!("macOS currently supports one selected app at a time. Select one app or use all computer audio.");
-        }
-
         let mut running_targets = Vec::new();
         for target in &targets {
             if let Some(pid) = crate::audio::capture::per_app::find_pid_for_app(&target.executable) {
@@ -492,13 +487,13 @@ impl AudioStream {
 
         #[cfg(target_os = "macos")]
         {
-            let first_pid = running_targets[0].1;
+            let pids: Vec<u32> = running_targets.iter().map(|(_, pid)| *pid).collect();
             Self::create_core_audio_stream_with_process(
                 device,
                 state,
                 _device_type,
                 recording_sender,
-                Some(first_pid),
+                &pids,
             ).await
         }
 

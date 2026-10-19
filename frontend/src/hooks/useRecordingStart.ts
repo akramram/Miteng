@@ -30,6 +30,12 @@ export function describeStartError(error: unknown): { title: string; message: st
       message: 'Computer audio is set to record only chosen apps. Open one of them, or switch the record card back to all computer audio.',
     };
   }
+  if (text.includes('played sound')) {
+    return {
+      title: 'Your chosen apps are silent',
+      message: 'Computer audio is set to record only chosen apps, and none of them has played sound yet. Play something in the app (or join the call), then start again.',
+    };
+  }
   if (text.includes('microphone') || text.includes('mic') || text.includes('input')) {
     return {
       title: 'Microphone not available',

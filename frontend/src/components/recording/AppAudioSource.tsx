@@ -178,7 +178,6 @@ export function AppAudioSource({
   variant?: 'full' | 'compact';
   live?: boolean;
 }) {
-  const platform = usePlatform();
   const compact = variant === 'compact';
 
   if (!choice.loaded) return <div className="af-skeleton h-8 rounded-lg" />;
@@ -187,11 +186,9 @@ export function AppAudioSource({
     ? 'Applies from your next recording.'
     : choice.onlyApps && choice.targets.length === 0
       ? 'Until you add an app, all computer audio is recorded.'
-      : choice.onlyApps && platform === 'macos'
-        ? 'On macOS the first chosen app that is open is recorded.'
-        : choice.onlyApps
-          ? "Only these apps are recorded. If none is open when you start, the recording can't start."
-          : null;
+      : choice.onlyApps
+        ? "Only these apps are recorded. If none is open when you start, the recording can't start."
+        : null;
 
   return (
     <div className={cn('space-y-2.5', compact && 'space-y-2')}>

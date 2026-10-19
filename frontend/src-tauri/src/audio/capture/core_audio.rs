@@ -54,16 +54,40 @@ struct AudioContext {
     should_terminate: Arc<AtomicBool>,
 }
 
+/// The Core Audio process objects to tap for the apps running as `target_pids`,
+/// from `(process object, pid)` pairs.
+///
+/// A process tap takes Core Audio process object IDs, not PIDs. Browsers and
+/// call apps also play sound from child helper processes (Edge's audio comes
+/// from a `com.microsoft.edgemac.helper` child of the main process), so every
+/// descendant of a target is tapped too.
+fn app_process_objects(
+    processes: &[(u32, u32)],
+    parent_of: impl Fn(u32) -> Option<u32>,
+    target_pids: &[u32],
+) -> Vec<u32> {
+    processes
+        .iter()
+        .filter(|&&(_, pid)| {
+            std::iter::successors(Some(pid), |&p| parent_of(p).filter(|&parent| parent != p))
+                .take(64)
+                .any(|p| target_pids.contains(&p))
+        })
+        .map(|&(object, _)| object)
+        .collect()
+}
+
 #[cfg(target_os = "macos")]
 impl CoreAudioCapture {
     /// Create a new Core Audio capture for system audio
     pub fn new() -> Result<Self> {
-        Self::new_with_process(None)
+        Self::new_with_processes(&[])
     }
 
-    /// Create a new Core Audio capture targeting a specific process or global audio
-    pub fn new_with_process(target_pid: Option<u32>) -> Result<Self> {
-        info!("🎙️ CoreAudio: Starting Core Audio capture initialization (target_pid: {:?})...", target_pid);
+    /// Create a new Core Audio capture of the apps running as `target_pids`,
+    /// or of all computer audio when empty.
+    pub fn new_with_processes(target_pids: &[u32]) -> Result<Self> {
+        info!("🎙️ CoreAudio: Starting Core Audio capture initialization (target_pids: {:?})...", target_pids);
 
         // Audio Capture permission (NSAudioCaptureUsageDescription) is required.
         // The permission dialog is automatically triggered when creating the Core Audio tap.
@@ -93,19 +117,34 @@ impl CoreAudioCapture {
         // When using a tap, the tap provides all the audio we need
         // Including both the tap AND the device creates duplicate audio (echo issue)
 
-        let tap_desc = if let Some(pid) = target_pid {
-            info!("🎙️ CoreAudio: Creating process tap for target PID {}...", pid);
-            let num = cidre::ns::Number::with_i32(pid as i32);
-            let arr = cidre::ns::Array::from_slice(&[&*num]);
-            ca::TapDesc::with_mono_mixdown_of_processes(&arr)
-        } else {
+        let tap_desc = if target_pids.is_empty() {
             info!("🎙️ CoreAudio: Creating process tap (global mono tap)...");
             ca::TapDesc::with_mono_global_tap_excluding_processes(&cidre::ns::Array::new())
+        } else {
+            let processes: Vec<(u32, u32)> = ca::Process::list()
+                .map_err(|e| anyhow::anyhow!("Failed to list Core Audio processes: {:?}", e))?
+                .iter()
+                .filter_map(|process| Some((process.0 .0, process.pid().ok()? as u32)))
+                .collect();
+            let mut system = sysinfo::System::new();
+            system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            let parent_of = |pid: u32| {
+                system.process(sysinfo::Pid::from_u32(pid))?.parent().map(|parent| parent.as_u32())
+            };
+            let objects = app_process_objects(&processes, parent_of, target_pids);
+            anyhow::ensure!(
+                !objects.is_empty(),
+                "The chosen apps have not played sound yet. Play something in the app, then start recording."
+            );
+            info!("🎙️ CoreAudio: Creating process tap for PIDs {:?} (Core Audio process objects {:?})...", target_pids, objects);
+            let numbers: Vec<_> = objects.iter().map(|&object| cidre::ns::Number::with_u32(object)).collect();
+            let refs: Vec<&cidre::ns::Number> = numbers.iter().map(|number| &**number).collect();
+            ca::TapDesc::with_mono_mixdown_of_processes(&cidre::ns::Array::from_slice(&refs))
         };
 
         let tap = tap_desc.create_process_tap()
             .or_else(|err| {
-                if target_pid.is_some() {
+                if !target_pids.is_empty() {
                     warn!("⚠️ CoreAudio: Per-process tap failed ({:?}), falling back to global tap...", err);
                     let fallback_desc = ca::TapDesc::with_mono_global_tap_excluding_processes(&cidre::ns::Array::new());
                     fallback_desc.create_process_tap()
@@ -486,6 +525,21 @@ impl Stream for CoreAudioStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn taps_the_apps_helpers_but_not_other_apps() {
+        // Real layout with Edge, Teams and Edge Beta running.
+        let parents = std::collections::HashMap::from([
+            (1285, 1), (2805, 1285), (2806, 2805),
+            (3000, 1), (3001, 3000),
+            (67708, 1), (67726, 67708),
+        ]);
+        let parent_of = |pid| parents.get(&pid).copied();
+        let processes = [(120, 1285), (113, 2805), (121, 2806), (140, 3000), (141, 3001), (133, 67726)];
+        assert_eq!(app_process_objects(&processes, parent_of, &[1285]), vec![120, 113, 121]);
+        assert_eq!(app_process_objects(&processes, parent_of, &[67708, 3000]), vec![140, 141, 133]);
+        assert!(app_process_objects(&processes, parent_of, &[9999]).is_empty());
+    }
 
     #[tokio::test]
     #[cfg(target_os = "macos")]
