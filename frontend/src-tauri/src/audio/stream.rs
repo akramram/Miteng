@@ -28,14 +28,19 @@ use super::capture::CoreAudioCapture;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::recording_state::AudioError;
 
-/// Notices a Core Audio tap that has gone deaf: it keeps delivering (near)
-/// silence while other apps are playing. Seen in a real call after Pause and
-/// Resume: the tap stayed registered but stopped receiving the call for over an
-/// hour, and only a rebuilt tap (or an output device change) brought it back.
+/// Keeps a Core Audio tap pointed at what the user hears.
+///
+/// The tap's aggregate device is built on the default output at the time. When
+/// the default output changes (switching from the monitor to the built-in
+/// speakers, or the monitor disconnecting), call apps follow the new device and
+/// the old tap stops receiving them while the mic carries on. The tap is rebuilt
+/// on the new default output. As a fallback it is also rebuilt when it stays
+/// (near) silent while another app is playing.
 #[cfg(target_os = "macos")]
 struct TapWatch {
     last_audible: std::time::Instant,
     last_check: std::time::Instant,
+    next_output_check: std::time::Instant,
     summary_start: std::time::Instant,
     summary_peak: f32,
     summary_samples: u64,
@@ -48,6 +53,9 @@ impl TapWatch {
     const AUDIBLE: f32 = 0.001;
     const DEAF_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
     const RECHECK: std::time::Duration = std::time::Duration::from_secs(10);
+    const OUTPUT_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
+    /// After a rebuild, let the new device settle before checking again.
+    const AFTER_REBUILD: std::time::Duration = std::time::Duration::from_secs(5);
     const SUMMARY_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 
     fn new() -> Self {
@@ -55,6 +63,7 @@ impl TapWatch {
         Self {
             last_audible: now,
             last_check: now,
+            next_output_check: now + Self::OUTPUT_CHECK,
             summary_start: now,
             summary_peak: 0.0,
             summary_samples: 0,
@@ -94,8 +103,48 @@ impl TapWatch {
         super::capture::core_audio::another_app_is_playing()
     }
 
+    /// True when the default output is no longer the device the tap is built on.
+    fn output_moved(&mut self, tap_output: u32) -> bool {
+        let now = std::time::Instant::now();
+        if now < self.next_output_check {
+            return false;
+        }
+        self.next_output_check = now + Self::OUTPUT_CHECK;
+        let moved = super::capture::core_audio::default_output_device().is_some_and(|current| current != tap_output);
+        if moved {
+            info!("Default output changed during recording; rebuilding the Core Audio tap on the new device");
+        }
+        moved
+    }
+
     fn rebuilt(&mut self) {
-        self.last_audible = std::time::Instant::now();
+        let now = std::time::Instant::now();
+        self.last_audible = now;
+        self.next_output_check = now + Self::AFTER_REBUILD;
+    }
+}
+
+/// A fresh tap and aggregate on the current default output, if it can replace the
+/// running one without changing the sample rate the pipeline was built for.
+#[cfg(target_os = "macos")]
+fn rebuild_tap(target_pids: &[u32], sample_rate: u32, device_name: &str) -> Option<super::capture::CoreAudioStream> {
+    match CoreAudioCapture::new_with_processes(target_pids).and_then(CoreAudioCapture::stream) {
+        Ok(fresh) if fresh.sample_rate() == sample_rate => {
+            info!("Core Audio tap rebuilt for {}", device_name);
+            Some(fresh)
+        }
+        Ok(fresh) => {
+            warn!(
+                "Rebuilt Core Audio tap runs at {} Hz, not {} Hz; keeping the current tap",
+                fresh.sample_rate(),
+                sample_rate
+            );
+            None
+        }
+        Err(e) => {
+            warn!("Could not rebuild the Core Audio tap: {}", e);
+            None
+        }
     }
 }
 
@@ -419,6 +468,14 @@ impl AudioStream {
                         }
                         Ok(None) => break,
                         Err(_) => {
+                            if watch.output_moved(stream.output_device()) {
+                                if let Some(fresh) = rebuild_tap(&target_pids, sample_rate, &device_name) {
+                                    stream = fresh;
+                                    stalled_for = std::time::Duration::ZERO;
+                                }
+                                watch.rebuilt();
+                                continue;
+                            }
                             stalled_for += STALL_POLL;
                             if stalled_for >= STALL_LIMIT {
                                 error!(
@@ -467,23 +524,17 @@ impl AudioStream {
 
                     // Process when we have enough samples
                     if frame_count >= frames_per_chunk {
-                        if watch.observe(&buffer, &device_name) && target_pids.is_empty() {
+                        let deaf = watch.observe(&buffer, &device_name) && target_pids.is_empty();
+                        if deaf {
                             warn!(
                                 "System audio silent for {}s on {} while another app is playing; rebuilding the Core Audio tap",
                                 TapWatch::DEAF_AFTER.as_secs(),
                                 device_name
                             );
-                            match CoreAudioCapture::new_with_processes(&target_pids).and_then(CoreAudioCapture::stream) {
-                                Ok(fresh) if fresh.sample_rate() == sample_rate => {
-                                    stream = fresh;
-                                    info!("Core Audio tap rebuilt for {}", device_name);
-                                }
-                                Ok(fresh) => warn!(
-                                    "Rebuilt Core Audio tap runs at {} Hz, not {} Hz; keeping the current tap",
-                                    fresh.sample_rate(),
-                                    sample_rate
-                                ),
-                                Err(e) => warn!("Could not rebuild the Core Audio tap: {}", e),
+                        }
+                        if deaf || watch.output_moved(stream.output_device()) {
+                            if let Some(fresh) = rebuild_tap(&target_pids, sample_rate, &device_name) {
+                                stream = fresh;
                             }
                             watch.rebuilt();
                         }

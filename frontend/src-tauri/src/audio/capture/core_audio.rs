@@ -29,6 +29,8 @@ struct WakerState {
 pub struct CoreAudioCapture {
     tap: ca::TapGuard,
     agg_desc: arc::Retained<cf::DictionaryOf<cf::String, cf::Type>>,
+    /// The default output when the tap was built; the aggregate is clocked by it.
+    output_device: u32,
 }
 
 /// Core Audio stream that produces audio samples
@@ -40,6 +42,7 @@ pub struct CoreAudioStream {
     _tap: ca::TapGuard,
     waker_state: Arc<Mutex<WakerState>>,
     current_sample_rate: Arc<AtomicU32>,
+    output_device: u32,
     last_drop_log: Instant,
 }
 
@@ -223,7 +226,7 @@ impl CoreAudioCapture {
         info!("✅ CoreAudio: Aggregate device descriptor created");
         info!("✅ CoreAudio: Core Audio capture initialized successfully!");
 
-        Ok(Self { tap, agg_desc })
+        Ok(Self { tap, agg_desc, output_device: output_device.0 .0 })
     }
 
     /// Start the audio device and create a stream
@@ -367,6 +370,7 @@ impl CoreAudioCapture {
             _tap: self.tap,
             waker_state,
             current_sample_rate,
+            output_device: self.output_device,
             last_drop_log: Instant::now(),
         })
     }
@@ -442,6 +446,17 @@ impl CoreAudioStream {
     pub fn sample_rate(&self) -> u32 {
         self.current_sample_rate.load(Ordering::Acquire)
     }
+
+    /// The output device this tap's aggregate is built on.
+    pub fn output_device(&self) -> u32 {
+        self.output_device
+    }
+}
+
+/// The system default output device right now.
+#[cfg(target_os = "macos")]
+pub fn default_output_device() -> Option<u32> {
+    ca::System::default_output_device().ok().map(|device| device.0 .0)
 }
 
 #[cfg(target_os = "macos")]
