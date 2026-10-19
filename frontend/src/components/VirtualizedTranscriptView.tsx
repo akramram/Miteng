@@ -293,9 +293,14 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     onChange: () => startTransition(() => rerender()),
   });
 
+  const { streamingSegmentId, getDisplayText } = useTranscriptStreaming(turns, isRecording, enableStreaming);
+
   useAutoScroll({
     scrollRef,
     segments: turns,
+    // Lines merged into the last turn and the end of its reveal grow the view
+    // without adding a turn.
+    contentKey: `${segments.length}:${streamingSegmentId ?? ''}`,
     isRecording,
     isPaused,
     virtualizer,
@@ -303,7 +308,6 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     disableAutoScroll,
   });
 
-  const { streamingSegmentId, getDisplayText } = useTranscriptStreaming(turns, isRecording, enableStreaming);
   const useVirtualization = turns.length >= VIRTUALIZATION_THRESHOLD;
   const activeIndex = useMemo(() => activeTurnIndex(turns, playbackTime), [turns, playbackTime]);
   const flashIndex = useMemo(

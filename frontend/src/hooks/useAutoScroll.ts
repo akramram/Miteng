@@ -3,7 +3,13 @@ import { Virtualizer } from "@tanstack/react-virtual";
 
 interface UseAutoScrollProps {
     scrollRef: RefObject<HTMLDivElement | null>;
-    segments: any[];
+    segments: ReadonlyArray<{ id: string }>;
+    /**
+     * Changes whenever visible content grows, including lines merged into the
+     * last segment (which leave `segments.length` unchanged). Defaults to
+     * `segments.length`.
+     */
+    contentKey?: string | number;
     isRecording: boolean;
     isPaused: boolean;
     activeSegmentId?: string;
@@ -38,6 +44,7 @@ const SCROLL_THRESHOLD = 100;
 export function useAutoScroll({
     scrollRef,
     segments,
+    contentKey = segments.length,
     isRecording,
     isPaused,
     activeSegmentId,
@@ -55,8 +62,8 @@ export function useAutoScroll({
     const userScrolledRef = useRef(false);
     // Track if we're doing a programmatic scroll
     const isProgrammaticScrollRef = useRef(false);
-    // Track previous segment count to detect new segments
-    const prevSegmentCountRef = useRef(segments.length);
+    // Previous content key, to detect new content
+    const prevContentKeyRef = useRef(contentKey);
 
     /**
      * Check if the user is scrolled near the bottom
@@ -89,7 +96,7 @@ export function useAutoScroll({
         const container = scrollRef.current;
         if (!container) return;
 
-        let scrollTimeout: ReturnType<typeof setTimeout> | null = null;
+        let scrollTimeout: ReturnType<typeof setTimeout> | undefined;
 
         const handleScroll = () => {
             // Skip if this is a programmatic scroll
@@ -97,24 +104,17 @@ export function useAutoScroll({
                 return;
             }
 
-            // Debounce scroll handling to prevent rapid state changes
-            if (scrollTimeout) {
-                clearTimeout(scrollTimeout);
-            }
+            // Record the intent at once: content that arrives during the
+            // debounce must not pull a reader who just scrolled up back down.
+            const nearBottom = isNearBottom();
+            autoScrollRef.current = nearBottom;
+            userScrolledRef.current = !nearBottom;
+
+            // Debounce the state update to prevent rapid re-renders
+            clearTimeout(scrollTimeout);
 
             scrollTimeout = setTimeout(() => {
-                // Check if user is near bottom
-                const nearBottom = isNearBottom();
-
-                if (nearBottom) {
-                    // User scrolled to bottom - re-enable auto-scroll
-                    userScrolledRef.current = false;
-                    setAutoScroll(true);
-                } else {
-                    // User scrolled away from bottom - disable auto-scroll
-                    userScrolledRef.current = true;
-                    setAutoScroll(false);
-                }
+                setAutoScroll(isNearBottom());
             }, 100);
         };
 
@@ -122,35 +122,23 @@ export function useAutoScroll({
 
         return () => {
             container.removeEventListener("scroll", handleScroll);
-            if (scrollTimeout) {
-                clearTimeout(scrollTimeout);
-            }
+            clearTimeout(scrollTimeout);
         };
     }, [isNearBottom, scrollRef]);
 
-    // Auto-scroll to bottom when new segments arrive during recording
+    // Follow new content during recording while the reader is at the bottom
     useEffect(() => {
         // EARLY RETURN: If auto-scroll is completely disabled (e.g., meeting details page)
         if (disableAutoScroll) {
             return;
         }
 
-        const segmentCount = segments.length;
-        const prevCount = prevSegmentCountRef.current;
-        const hasNewSegments = segmentCount > prevCount;
+        const hasNewContent = contentKey !== prevContentKeyRef.current;
+        prevContentKeyRef.current = contentKey;
 
-        // Update the ref for next comparison
-        prevSegmentCountRef.current = segmentCount;
-
-        // Only scroll if new segments arrived AND user is currently at bottom
-        // Check isNearBottom() immediately to avoid race conditions with the debounced scroll handler
-        if (hasNewSegments && autoScrollRef.current && isRecording && !isPaused && segmentCount > 0) {
-            // Check if user is at bottom RIGHT NOW before scrolling
-            const isCurrentlyAtBottom = isNearBottom();
-            if (!isCurrentlyAtBottom) {
-                // User has scrolled up - don't auto-scroll
-                return;
-            }
+        // "At the bottom" is the reader's last scroll position, not a measurement
+        // taken now: the new content has already pushed the bottom further down.
+        if (hasNewContent && autoScrollRef.current && isRecording && !isPaused && segments.length > 0) {
 
             isProgrammaticScrollRef.current = true;
 
@@ -174,7 +162,7 @@ export function useAutoScroll({
                 isProgrammaticScrollRef.current = false;
             }, 150);
         }
-    }, [segments.length, isRecording, isPaused, useVirtualization, virtualizer, scrollRef, isNearBottom, disableAutoScroll]);
+    }, [contentKey, segments.length, isRecording, isPaused, useVirtualization, virtualizer, scrollRef, disableAutoScroll]);
 
     // Auto-scroll to active segment (when clicking on search results, etc.)
     useEffect(() => {
@@ -182,7 +170,7 @@ export function useAutoScroll({
             isProgrammaticScrollRef.current = true;
 
             if (useVirtualization && virtualizer) {
-                const index = segments.findIndex((s: any) => s.id === activeSegmentId);
+                const index = segments.findIndex((s) => s.id === activeSegmentId);
                 if (index >= 0) {
                     virtualizer.scrollToIndex(index, { align: "center", behavior: "smooth" });
                 }

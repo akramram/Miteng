@@ -250,13 +250,14 @@ pub fn start_transcription_task<R: Runtime>(
                                         None => "N/A".to_string(),
                                     };
 
-                                    info!("🔍 Worker {} transcription result: text='{}', confidence={}, partial={}",
-                                          worker_id, transcript, confidence_str, is_partial);
+                                    // Logs reach a file on disk: record sizes, never meeting content.
+                                    info!("🔍 Worker {} transcription result: {} chars, confidence={}, partial={}",
+                                          worker_id, transcript.chars().count(), confidence_str, is_partial);
 
                                     if should_emit_transcript(&transcript, confidence_opt) {
                                         // PERFORMANCE: Only log transcription results, not every processing step
-                                        info!("✅ Worker {} transcribed: {} (confidence: {}, partial: {})",
-                                              worker_id, transcript, confidence_str, is_partial);
+                                        info!("✅ Worker {} transcribed {} chars (confidence: {}, partial: {})",
+                                              worker_id, transcript.chars().count(), confidence_str, is_partial);
 
                                         // Emit speech-detected event for frontend UX (only on first detection per session)
                                         // This is lightweight and provides better user feedback

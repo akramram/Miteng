@@ -826,15 +826,16 @@ impl WhisperEngine {
                 perf_debug!("Transcription #{} result is empty - no speech detected", transcription_count);
             }
         } else {
+            // Logs reach a file on disk: record sizes, never meeting content.
             if cleaned_result != final_result {
-                log::info!("Cleaned repetitive transcription #{}: '{}' -> '{}'", transcription_count, final_result, cleaned_result);
+                log::info!("Cleaned repetitive transcription #{}: {} -> {} chars", transcription_count, final_result.chars().count(), cleaned_result.chars().count());
             }
             // Reduce successful transcription logging frequency
             // Only log every 5th result or significant results (>50 chars) to reduce I/O overhead
             if transcription_count % 5 == 0 || cleaned_result.len() > 50 || duration_seconds > 10.0 {
-                log::info!("Transcription #{} result: '{}'", transcription_count, cleaned_result);
+                log::info!("Transcription #{} result: {} chars", transcription_count, cleaned_result.chars().count());
             } else {
-                perf_debug!("Transcription #{} result: '{}'", transcription_count, cleaned_result);
+                perf_debug!("Transcription #{} result: {} chars", transcription_count, cleaned_result.chars().count());
             }
         }
 
