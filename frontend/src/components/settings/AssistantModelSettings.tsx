@@ -8,6 +8,7 @@ import { useCustomProviders } from '@/hooks/useCustomProviders';
 import {
   ASSISTANT_MODEL_CHANGED_EVENT,
   getAssistantModelConfig,
+  customModelLabel,
   providerDisplayName,
   saveAssistantModelConfig,
   type AssistantModelConfig,
@@ -88,7 +89,9 @@ export function AssistantModelSettings({ summaryConfig }: AssistantModelSettings
     }
   };
 
-  const summaryLabel = `${providerDisplayName(summaryConfig, providers)} · ${summaryConfig.model || 'no model'}`;
+  const summaryServer = providers?.find((server) => server.id === summaryConfig.customProviderId);
+  const summaryModel = summaryConfig.model ? customModelLabel(summaryServer, summaryConfig.model) : 'no model';
+  const summaryLabel = `${providerDisplayName(summaryConfig, providers)} · ${summaryModel}`;
 
   return (
     <div className="rounded-2xl border border-af-border bg-af-panel-2/40 p-5">

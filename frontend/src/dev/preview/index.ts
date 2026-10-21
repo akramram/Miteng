@@ -10,6 +10,7 @@
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { MotionGlobalConfig } from 'framer-motion';
 import * as fx from './fixtures';
+import type { CustomModel } from '@/lib/custom-providers';
 import { handleLiveCommand } from './live';
 import { CUSTOM_CHROME_CLASS } from '@/lib/window-chrome';
 
@@ -84,7 +85,11 @@ const state = {
       name: 'OpenRouter',
       endpoint: 'https://openrouter.ai/api/v1',
       apiKey: 'sk-or-preview',
-      models: ['anthropic/claude-sonnet-4', 'openai/gpt-4o-mini', 'meta-llama/llama-3.1-70b-instruct'],
+      models: [
+        { id: 'anthropic/claude-sonnet-4', name: 'Anthropic: Claude Sonnet 4' },
+        { id: 'openai/gpt-4o-mini', name: 'OpenAI: GPT-4o-mini' },
+        { id: 'meta-llama/llama-3.1-70b-instruct', name: 'Meta: Llama 3.1 70B Instruct' },
+      ],
       maxTokens: null,
       temperature: null,
       topP: null,
@@ -94,7 +99,7 @@ const state = {
       name: 'Office vLLM',
       endpoint: 'http://10.0.0.20:8000/v1',
       apiKey: null,
-      models: ['qwen2.5-32b-instruct'],
+      models: [{ id: 'qwen2.5-32b-instruct' }],
       maxTokens: 4096,
       temperature: 0.3,
       topP: null,
@@ -117,7 +122,7 @@ interface PreviewCustomProvider {
   name: string;
   endpoint: string;
   apiKey: string | null;
-  models: string[];
+  models: CustomModel[];
   maxTokens: number | null;
   temperature: number | null;
   topP: number | null;
@@ -133,7 +138,12 @@ function validCustomProvider(input: Args): PreviewCustomProvider {
   if (clash) throw new Error(`A server named ${clash.name} already exists`);
   const endpoint = String(input.endpoint ?? '').trim();
   if (!/^https?:\/\/\S+$/i.test(endpoint)) throw new Error('Endpoint must be an http:// or https:// URL');
-  const models = [...new Set(((input.models ?? []) as string[]).map((model) => model.trim()).filter(Boolean))];
+  const models: CustomModel[] = [];
+  for (const model of (input.models ?? []) as CustomModel[]) {
+    const id = model.id.trim();
+    const name = model.name?.trim();
+    if (id && !models.some((entry) => entry.id === id)) models.push(name && name !== id ? { id, name } : { id });
+  }
   if (models.length === 0) throw new Error('Add at least one model');
   if (input.maxTokens != null && input.maxTokens < 1) throw new Error('Max tokens must be at least 1');
   if (input.temperature != null && (input.temperature < 0 || input.temperature > 2)) throw new Error('Temperature must be between 0 and 2');
@@ -606,8 +616,13 @@ function handle(cmd: string, args: Args): unknown {
       if (!/^https?:\/\/\S+$/i.test(String(args.endpoint ?? '').trim())) {
         throw new Error('Endpoint must be an http:// or https:// URL');
       }
-      const { promise, resolve } = Promise.withResolvers<string[]>();
-      setTimeout(() => resolve(['gpt-4o-mini', 'llama-3.1-8b-instruct', 'mistral-small-latest', 'qwen2.5-32b-instruct']), 500);
+      const { promise, resolve } = Promise.withResolvers<CustomModel[]>();
+      setTimeout(() => resolve([
+        { id: 'gpt-4o-mini', name: 'GPT-4o mini' },
+        { id: 'llama-3.1-8b-instruct', name: 'Llama 3.1 8B Instruct' },
+        { id: 'mistral-small-latest', name: 'Mistral Small' },
+        { id: 'qwen2.5-32b-instruct' },
+      ]), 500);
       return promise;
     }
     case 'api_test_custom_provider_connection': {

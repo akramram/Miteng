@@ -52,7 +52,7 @@ import { extractActionItems } from '@/lib/action-items';
 import { completeSummaryMarkdown } from '@/lib/summary-markdown';
 import { labelForCode } from '@/lib/summary-languages';
 import { readMeetingSummaryLanguage, saveMeetingSummaryLanguage } from '@/lib/summary-language-preferences';
-import { CUSTOM_PROVIDER, providerDisplayName } from '@/lib/custom-providers';
+import { CUSTOM_PROVIDER, customModelLabel, providerDisplayName } from '@/lib/custom-providers';
 import { useCustomProviders } from '@/hooks/useCustomProviders';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
@@ -278,8 +278,11 @@ function NotesTab({
     }
   };
   const templateName = templates.find((template) => template.id === selectedTemplate)?.name ?? 'Standard';
-  const modelLabel = modelConfig?.model ? modelConfig.model : 'No model';
   const customProviders = useCustomProviders();
+  const customServer = modelConfig?.provider === CUSTOM_PROVIDER
+    ? customProviders?.find((server) => server.id === modelConfig.customProviderId)
+    : undefined;
+  const modelLabel = modelConfig?.model ? customModelLabel(customServer, modelConfig.model) : 'No model';
   const providerLabel = modelConfig?.provider ? providerDisplayName(modelConfig, customProviders) : '';
   const languageLabel = language ? labelForCode(language) : 'Auto language';
 

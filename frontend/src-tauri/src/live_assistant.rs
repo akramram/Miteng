@@ -532,7 +532,9 @@ mod assistant_model_tests {
                 name: name.to_string(),
                 endpoint: endpoint.to_string(),
                 api_key: Some(format!("{name}-key")),
-                models: vec!["m1".to_string(), "m2".to_string()],
+                models: ["m1", "m2"]
+                    .map(|id| crate::database::repositories::custom_provider::CustomModel { id: id.into(), name: None })
+                    .to_vec(),
                 ..Default::default()
             },
         )

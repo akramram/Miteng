@@ -9,12 +9,18 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelConfig } from '@/services/configService';
 
+/** `id` is what the API receives; `name` is the server's human-readable label, if any. */
+export interface CustomModel {
+  id: string;
+  name?: string | null;
+}
+
 export interface CustomProvider {
   id: string;
   name: string;
   endpoint: string;
   apiKey: string | null;
-  models: string[];
+  models: CustomModel[];
   maxTokens: number | null;
   temperature: number | null;
   topP: number | null;
@@ -60,9 +66,9 @@ export async function deleteCustomProvider(id: string): Promise<void> {
   window.dispatchEvent(new Event(CUSTOM_PROVIDERS_CHANGED_EVENT));
 }
 
-/** Model ids from the server's `/models` endpoint. */
-export async function fetchCustomProviderModels(endpoint: string, apiKey: string | null): Promise<string[]> {
-  return invoke<string[]>('api_fetch_custom_provider_models', { endpoint, apiKey });
+/** Models from the server's `/models` endpoint, with display names when the server gives them. */
+export async function fetchCustomProviderModels(endpoint: string, apiKey: string | null): Promise<CustomModel[]> {
+  return invoke<CustomModel[]>('api_fetch_custom_provider_models', { endpoint, apiKey });
 }
 
 /** Sends a tiny chat completion to check endpoint, key and model together. */
@@ -94,4 +100,9 @@ export function providerDisplayName(
 ): string {
   if (config.provider !== CUSTOM_PROVIDER) return config.provider;
   return providers?.find((entry) => entry.id === config.customProviderId)?.name ?? 'Custom server';
+}
+
+/** A custom model's display name, falling back to its id (also for ids not in the list). */
+export function customModelLabel(provider: CustomProvider | null | undefined, modelId: string): string {
+  return provider?.models.find((model) => model.id === modelId)?.name || modelId;
 }

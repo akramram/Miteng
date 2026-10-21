@@ -8,6 +8,44 @@ use sqlx::SqlitePool;
 
 pub const CUSTOM_PROVIDER: &str = "custom-openai";
 
+/// A model a server offers: `id` is sent to the API, `name` is what people see.
+/// Stored lists written before names existed hold plain id strings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "StoredModel")]
+pub struct CustomModel {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredModel {
+    Id(String),
+    Full { id: String, #[serde(default)] name: Option<String> },
+}
+
+impl From<StoredModel> for CustomModel {
+    fn from(stored: StoredModel) -> Self {
+        match stored {
+            StoredModel::Id(id) => Self { id, name: None },
+            StoredModel::Full { id, name } => Self { id, name },
+        }
+    }
+}
+
+impl CustomModel {
+    /// Trimmed, with a name that adds nothing over the id dropped; None when the id is empty.
+    pub fn normalized(&self) -> Option<Self> {
+        let id = self.id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let name = self.name.as_deref().map(str::trim).filter(|name| !name.is_empty() && *name != id);
+        Some(Self { id: id.to_string(), name: name.map(str::to_string) })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomProvider {
@@ -15,7 +53,7 @@ pub struct CustomProvider {
     pub name: String,
     pub endpoint: String,
     pub api_key: Option<String>,
-    pub models: Vec<String>,
+    pub models: Vec<CustomModel>,
     pub max_tokens: Option<i32>,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
@@ -31,7 +69,7 @@ pub struct CustomProviderInput {
     #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]
-    pub models: Vec<String>,
+    pub models: Vec<CustomModel>,
     #[serde(default)]
     pub max_tokens: Option<i32>,
     #[serde(default)]
@@ -119,11 +157,10 @@ fn validate(input: CustomProviderInput) -> Result<CustomProviderInput, CustomPro
     }
     let endpoint = normalize_endpoint(&input.endpoint).map_err(CustomProviderError::Invalid)?;
 
-    let mut models: Vec<String> = Vec::with_capacity(input.models.len());
-    for model in &input.models {
-        let model = model.trim();
-        if !model.is_empty() && !models.iter().any(|existing| existing == model) {
-            models.push(model.to_string());
+    let mut models: Vec<CustomModel> = Vec::with_capacity(input.models.len());
+    for model in input.models.iter().filter_map(CustomModel::normalized) {
+        if !models.iter().any(|existing| existing.id == model.id) {
+            models.push(model);
         }
     }
     if models.is_empty() {
@@ -349,11 +386,15 @@ mod tests {
         pool
     }
 
+    fn model(id: &str, name: Option<&str>) -> CustomModel {
+        CustomModel { id: id.to_string(), name: name.map(str::to_string) }
+    }
+
     fn input(name: &str, models: &[&str]) -> CustomProviderInput {
         CustomProviderInput {
             name: name.to_string(),
             endpoint: "http://localhost:8000/v1".to_string(),
-            models: models.iter().map(|model| model.to_string()).collect(),
+            models: models.iter().map(|id| model(id, None)).collect(),
             ..Default::default()
         }
     }
@@ -401,7 +442,8 @@ mod tests {
         assert_eq!(server.name, "Custom server");
         assert_eq!(server.endpoint, "http://box:8000/v1");
         assert_eq!(server.api_key.as_deref(), Some("sk-1"));
-        assert_eq!(server.models, vec!["qwen3:8b".to_string()]);
+        // The migration stored the legacy model as a plain id string.
+        assert_eq!(server.models, vec![model("qwen3:8b", None)]);
         assert_eq!(server.max_tokens, Some(2048));
         assert_eq!(server.temperature, Some(0.4));
         assert_eq!(server.top_p, Some(0.9));
@@ -419,10 +461,14 @@ mod tests {
     #[tokio::test]
     async fn save_validates_names_and_models() {
         let pool = migrated_pool().await;
-        let created = CustomProviderRepository::save(&pool, input("Lab box", &[" a ", "a", "b", ""]))
-            .await
-            .unwrap();
-        assert_eq!(created.models, vec!["a".to_string(), "b".to_string()]);
+        let mut lab = input("Lab box", &[" a ", "a", "b", ""]);
+        lab.models.push(model(" c ", Some(" Model C ")));
+        lab.models.push(model("d", Some("d")));
+        let created = CustomProviderRepository::save(&pool, lab).await.unwrap();
+        assert_eq!(
+            created.models,
+            vec![model("a", None), model("b", None), model("c", Some("Model C")), model("d", None)]
+        );
         assert_eq!(created.api_key, None);
 
         let duplicate = CustomProviderRepository::save(&pool, input("LAB BOX", &["c"])).await;

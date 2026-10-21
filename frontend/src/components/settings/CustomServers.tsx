@@ -24,6 +24,7 @@ import {
   fetchCustomProviderModels,
   saveCustomProvider,
   testCustomProviderConnection,
+  type CustomModel,
   type CustomProvider,
 } from '@/lib/custom-providers';
 import { useCustomProviders } from '@/hooks/useCustomProviders';
@@ -128,13 +129,14 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
   const [endpoint, setEndpoint] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
-  const [models, setModels] = useState<string[]>([]);
+  const [models, setModels] = useState<CustomModel[]>([]);
   const [modelDraft, setModelDraft] = useState('');
+  const [modelNameDraft, setModelNameDraft] = useState('');
   const [maxTokens, setMaxTokens] = useState('');
   const [temperature, setTemperature] = useState('');
   const [topP, setTopP] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [fetched, setFetched] = useState<string[] | null>(null);
+  const [fetched, setFetched] = useState<CustomModel[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [fetchFilter, setFetchFilter] = useState('');
   const [fetching, setFetching] = useState(false);
@@ -151,6 +153,7 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
     setShowApiKey(false);
     setModels(provider?.models ?? []);
     setModelDraft('');
+    setModelNameDraft('');
     setMaxTokens(provider?.maxTokens?.toString() ?? '');
     setTemperature(provider?.temperature?.toString() ?? '');
     setTopP(provider?.topP?.toString() ?? '');
@@ -158,29 +161,32 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
     setFetched(null);
     setPicked(new Set());
     setFetchFilter('');
-    setTestModel(provider?.models[0] ?? '');
+    setTestModel(provider?.models[0]?.id ?? '');
   }, [open, provider]);
 
-  const addModels = (ids: string[]) => {
+  const addModels = (added: CustomModel[]) => {
+    const fresh = added
+      .map((model) => ({ id: model.id.trim(), name: model.name?.trim() || null }))
+      .filter((model) => model.id);
     setModels((current) => {
       const next = [...current];
-      for (const raw of ids) {
-        const id = raw.trim();
-        if (id && !next.includes(id)) next.push(id);
+      for (const model of fresh) {
+        if (!next.some((entry) => entry.id === model.id)) next.push(model);
       }
       return next;
     });
-    if (!testModel && ids[0]) setTestModel(ids[0].trim());
+    if (!testModel && fresh[0]) setTestModel(fresh[0].id);
   };
 
   const removeModel = (id: string) => {
-    setModels((current) => current.filter((entry) => entry !== id));
+    setModels((current) => current.filter((entry) => entry.id !== id));
     if (testModel === id) setTestModel('');
   };
 
   const addDraft = () => {
-    addModels([modelDraft]);
+    addModels([{ id: modelDraft, name: modelNameDraft }]);
     setModelDraft('');
+    setModelNameDraft('');
   };
 
   const onDraftKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -192,11 +198,11 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
   const fetchModels = async () => {
     setFetching(true);
     try {
-      const ids = await fetchCustomProviderModels(endpoint.trim(), apiKey.trim() || null);
-      setFetched(ids);
+      const available = await fetchCustomProviderModels(endpoint.trim(), apiKey.trim() || null);
+      setFetched(available);
       setPicked(new Set());
       setFetchFilter('');
-      if (ids.length === 0) toast.info('The server listed no models. Add model names by hand.');
+      if (available.length === 0) toast.info('The server listed no models. Add model names by hand.');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
     } finally {
@@ -206,7 +212,11 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
 
   const visibleFetched = useMemo(() => {
     const needle = fetchFilter.trim().toLowerCase();
-    return (fetched ?? []).filter((id) => !models.includes(id) && (!needle || id.toLowerCase().includes(needle)));
+    return (fetched ?? []).filter(
+      (model) =>
+        !models.some((entry) => entry.id === model.id) &&
+        (!needle || model.id.toLowerCase().includes(needle) || model.name?.toLowerCase().includes(needle))
+    );
   }, [fetched, fetchFilter, models]);
 
   const togglePicked = (id: string, checked: boolean) => {
@@ -219,7 +229,7 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
   };
 
   const addPicked = () => {
-    addModels([...picked]);
+    addModels(visibleFetched.filter((model) => picked.has(model.id)));
     setPicked(new Set());
   };
 
@@ -326,16 +336,18 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
             </div>
             {models.length > 0 ? (
               <ul className="flex flex-wrap gap-1.5" aria-label="Models">
-                {models.map((id) => (
+                {models.map((model) => (
                   <li
-                    key={id}
+                    key={model.id}
+                    title={model.id}
                     className="flex max-w-full items-center gap-1 rounded-full border border-af-border bg-af-panel-2 py-0.5 pl-2.5 pr-1 text-[12px] text-af-text"
                   >
-                    <span className="truncate">{id}</span>
+                    <span className="truncate">{model.name || model.id}</span>
+                    {model.name && <span className="truncate text-af-text-3">{model.id}</span>}
                     <button
                       type="button"
-                      aria-label={`Remove ${id}`}
-                      onClick={() => removeModel(id)}
+                      aria-label={`Remove ${model.name || model.id}`}
+                      onClick={() => removeModel(model.id)}
                       className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-af-text-3 hover:bg-af-hover hover:text-af-text"
                     >
                       <X className="h-3 w-3" />
@@ -352,7 +364,14 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
                 value={modelDraft}
                 onChange={(event) => setModelDraft(event.target.value)}
                 onKeyDown={onDraftKeyDown}
-                placeholder="Model name, e.g. llama-3.1-70b"
+                placeholder="Model id, e.g. llama-3.1-70b"
+              />
+              <Input
+                value={modelNameDraft}
+                onChange={(event) => setModelNameDraft(event.target.value)}
+                onKeyDown={onDraftKeyDown}
+                placeholder="Display name (optional)"
+                aria-label="Model display name"
               />
               <Button variant="secondary" onClick={addDraft} disabled={!modelDraft.trim()}>
                 Add
@@ -378,11 +397,12 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
                   />
                 )}
                 <ul className="max-h-48 space-y-0.5 overflow-y-auto">
-                  {visibleFetched.map((id) => (
-                    <li key={id}>
+                  {visibleFetched.map((model) => (
+                    <li key={model.id}>
                       <label className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-[13px] text-af-text hover:bg-af-hover">
-                        <Checkbox checked={picked.has(id)} onCheckedChange={(checked) => togglePicked(id, checked === true)} />
-                        <span className="truncate">{id}</span>
+                        <Checkbox checked={picked.has(model.id)} onCheckedChange={(checked) => togglePicked(model.id, checked === true)} />
+                        <span className="min-w-0 flex-1 truncate">{model.name || model.id}</span>
+                        {model.name && <span className="max-w-[45%] shrink-0 truncate text-[11px] text-af-text-3">{model.id}</span>}
                       </label>
                     </li>
                   ))}
@@ -392,9 +412,14 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
                     </li>
                   )}
                 </ul>
-                <Button size="sm" onClick={addPicked} disabled={picked.size === 0}>
-                  Add {picked.size > 0 ? picked.size : ''} selected
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" onClick={addPicked} disabled={picked.size === 0}>
+                    Add {picked.size > 0 ? picked.size : ''} selected
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => addModels(visibleFetched)} disabled={visibleFetched.length === 0}>
+                    Add all{visibleFetched.length > 0 ? ` (${visibleFetched.length})` : ''}
+                  </Button>
+                </div>
               </div>
             )}
           </div>
@@ -461,9 +486,9 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
                   <SelectValue placeholder="Add a model first" />
                 </SelectTrigger>
                 <SelectContent>
-                  {models.map((id) => (
-                    <SelectItem key={id} value={id}>
-                      {id}
+                  {models.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      {model.name || model.id}
                     </SelectItem>
                   ))}
                 </SelectContent>

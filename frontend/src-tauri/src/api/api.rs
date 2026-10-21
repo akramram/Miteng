@@ -10,7 +10,8 @@ use crate::{
         models::MeetingModel,
         repositories::{
             custom_provider::{
-                normalize_endpoint, CustomProvider, CustomProviderInput, CustomProviderRepository,
+                normalize_endpoint, CustomModel, CustomProvider, CustomProviderInput,
+                CustomProviderRepository,
             },
             meeting::MeetingsRepository,
             setting::{AssistantModelConfig, SettingsRepository},
@@ -1587,7 +1588,7 @@ pub async fn api_delete_custom_provider<R: Runtime>(
 pub async fn api_fetch_custom_provider_models(
     endpoint: String,
     api_key: Option<String>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<CustomModel>, String> {
     let endpoint = normalize_endpoint(&endpoint)?;
     let url = format!("{}/models", endpoint.trim_end_matches('/'));
     let client = reqwest::Client::builder()
@@ -1619,11 +1620,13 @@ pub async fn api_fetch_custom_provider_models(
         let detail: String = body.chars().take(200).collect();
         return Err(format!("The server answered {status} for {url}: {detail}"));
     }
-    parse_model_ids(&body)
+    parse_models(&body)
 }
 
-/// Parses an OpenAI `/models` response (`{"data": [{"id": "..."}]}`) into sorted, unique ids.
-fn parse_model_ids(body: &str) -> Result<Vec<String>, String> {
+/// Parses an OpenAI-style `/models` response (`{"data": [{"id": "...", "name": "..."}]}`)
+/// into models sorted and unique by id. Servers that name their models use `name`
+/// (OpenRouter) or `display_name` (Anthropic-style); plain OpenAI lists only ids.
+fn parse_models(body: &str) -> Result<Vec<CustomModel>, String> {
     let json: serde_json::Value = serde_json::from_str(body)
         .map_err(|_| "The server's /models response is not JSON".to_string())?;
     let data = json
@@ -1633,16 +1636,22 @@ fn parse_model_ids(body: &str) -> Result<Vec<String>, String> {
             "The server's /models response has no \"data\" list; type the model name instead"
                 .to_string()
         })?;
-    let mut ids: Vec<String> = data
+    let text = |entry: &serde_json::Value, key: &str| {
+        entry.get(key).and_then(serde_json::Value::as_str).map(str::to_string)
+    };
+    let mut models: Vec<CustomModel> = data
         .iter()
-        .filter_map(|model| model.get("id").and_then(serde_json::Value::as_str))
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
+        .filter_map(|entry| {
+            CustomModel {
+                id: text(entry, "id")?,
+                name: text(entry, "name").or_else(|| text(entry, "display_name")),
+            }
+            .normalized()
+        })
         .collect();
-    ids.sort();
-    ids.dedup();
-    Ok(ids)
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.dedup_by(|a, b| a.id == b.id);
+    Ok(models)
 }
 
 /// Ask AI selection; `provider: null` means it follows the summary selection.
@@ -1816,13 +1825,20 @@ pub async fn api_test_custom_provider_connection<R: Runtime>(
 
 #[cfg(test)]
 mod custom_provider_tests {
-    use super::parse_model_ids;
+    use super::parse_models;
+    use crate::database::repositories::custom_provider::CustomModel;
 
     #[test]
-    fn model_list_is_sorted_and_unique() {
-        let body = r#"{"object":"list","data":[{"id":"b"},{"id":"a"},{"id":"b"},{"id":" "},{"x":1}]}"#;
-        assert_eq!(parse_model_ids(body).unwrap(), vec!["a".to_string(), "b".to_string()]);
-        assert!(parse_model_ids(r#"{"models":[]}"#).is_err());
-        assert!(parse_model_ids("<html>").is_err());
+    fn model_list_keeps_display_names_and_is_unique_by_id() {
+        let body = r#"{"object":"list","data":[
+            {"id":"b","name":"Model B"},{"id":"a"},{"id":"b"},{"id":" "},{"x":1},
+            {"id":"c","display_name":"Claude C"},{"id":"d","name":"d"}]}"#;
+        let named = |id: &str, name: Option<&str>| CustomModel { id: id.into(), name: name.map(Into::into) };
+        assert_eq!(
+            parse_models(body).unwrap(),
+            vec![named("a", None), named("b", Some("Model B")), named("c", Some("Claude C")), named("d", None)]
+        );
+        assert!(parse_models(r#"{"models":[]}"#).is_err());
+        assert!(parse_models("<html>").is_err());
     }
 }

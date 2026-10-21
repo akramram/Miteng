@@ -247,7 +247,7 @@ export function ModelSettingsModal({
     openai: openaiModels.length > 0 ? openaiModels : OPENAI_FALLBACK_MODELS,
     openrouter: openRouterModels.map((m) => m.id),
     'builtin-ai': builtinAiModels.map((m) => m.name),
-    'custom-openai': selectedServer?.models ?? [],
+    'custom-openai': selectedServer?.models.map((model) => model.id) ?? [],
   };
 
   const requiresApiKey =
@@ -673,7 +673,7 @@ export function ModelSettingsModal({
   const selectServer = (server: CustomProvider) => {
     const map = JSON.parse(localStorage.getItem('providerModelMap') || '{}');
     const cached = map[`${CUSTOM_PROVIDER}:${server.id}`];
-    const model = typeof cached === 'string' && cached ? cached : server.models[0] ?? '';
+    const model = typeof cached === 'string' && cached ? cached : server.models[0]?.id ?? '';
     setModelConfig((prev: ModelConfig) => ({ ...prev, provider: CUSTOM_PROVIDER, customProviderId: server.id, model }));
   };
 
@@ -792,14 +792,15 @@ export function ModelSettingsModal({
     );
   });
 
-  // The server's models, plus a typed model that is not in its list
-  const customModelOptions = [...new Set([...(selectedServer?.models ?? []), modelConfig.model].filter(Boolean))].map(
-    (id) => ({
-      value: id,
-      label: id,
-      description: selectedServer?.models.includes(id) ? undefined : 'Not in the server list',
-    })
-  );
+  // The server's models (by display name), plus a typed model that is not in its list
+  const customModelOptions = (selectedServer?.models ?? []).map((model) => ({
+    value: model.id,
+    label: model.name || model.id,
+    description: model.name ? model.id : undefined,
+  }));
+  if (modelConfig.model && !selectedServer?.models.some((model) => model.id === modelConfig.model)) {
+    customModelOptions.push({ value: modelConfig.model, label: modelConfig.model, description: 'Not in the server list' });
+  }
 
   return (
     <div>
