@@ -1741,7 +1741,8 @@ pub async fn api_test_custom_provider_connection<R: Runtime>(
                 "content": "Hi"
             }
         ],
-        "max_tokens": 5
+        "max_tokens": 5,
+        "stream": false
     });
 
     let client = reqwest::Client::builder()
@@ -1765,44 +1766,18 @@ pub async fn api_test_custom_provider_connection<R: Runtime>(
             let response_text = response.text().await.unwrap_or_default();
 
             if status.is_success() {
-                // Parse response as JSON to verify it's a valid OpenAI-compatible response
-                match serde_json::from_str::<serde_json::Value>(&response_text) {
-                    Ok(json) => {
-                        // Verify the response has the expected OpenAI structure
-                        if let Some(choices) = json.get("choices") {
-                            if let Some(choices_array) = choices.as_array() {
-                                if !choices_array.is_empty() {
-                                    // Verify the first choice has the required message structure
-                                    if let Some(first_choice) = choices_array.get(0) {
-                                        // Check if message.content field exists (can be empty string)
-                                        let has_message_structure = first_choice
-                                            .get("message")
-                                            .and_then(|m| {
-                                                m.get("content")
-                                                .or_else(|| m.get("reasoning_content"))
-                                            })
-                                            .is_some();
-
-                                        if has_message_structure {
-                                            log_info!("✅ Custom OpenAI connection test successful - response validated");
-                                            return Ok(serde_json::json!({
-                                                "status": "success",
-                                                "message": "Connection successful and response validated",
-                                                "http_status": status.as_u16()
-                                            }));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Response was 200 but doesn't match OpenAI format
-                        log_warn!("⚠️ Endpoint returned 200 but response doesn't match OpenAI format: {}", response_text);
-                        Err("Endpoint is reachable but doesn't appear to be OpenAI-compatible. Response is missing 'choices' array or 'message.content' / 'message.reasoning_content' field.".to_string())
+                match crate::summary::llm_client::chat_completion_text(&response_text) {
+                    Ok(_) => {
+                        log_info!("✅ Custom server connection test successful - response validated");
+                        Ok(serde_json::json!({
+                            "status": "success",
+                            "message": "Connection successful and response validated",
+                            "http_status": status.as_u16()
+                        }))
                     }
                     Err(e) => {
-                        log_warn!("⚠️ Endpoint returned 200 but response is not valid JSON: {}", e);
-                        Err(format!("Endpoint is reachable but returned invalid JSON: {}. Response: {}", e, response_text))
+                        log_warn!("⚠️ Endpoint returned 200 but its reply is not an OpenAI chat completion: {}", e);
+                        Err(format!("Endpoint is reachable, but: {e}"))
                     }
                 }
             } else {

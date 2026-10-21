@@ -25,22 +25,50 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
+    /// Always false: some OpenAI-compatible routers stream unless told otherwise.
+    pub stream: bool,
 }
 
-// Generic structure for OpenAI-compatible API chat responses
-#[derive(Deserialize, Debug)]
-pub struct ChatResponse {
-    pub choices: Vec<Choice>,
-}
+/// The reply text of an OpenAI-style chat completion.
+///
+/// Accepts a single JSON response (`choices[0].message.content`) and, for servers
+/// that stream even when asked not to, a server-sent event body whose
+/// `data: {..}` chunks carry `choices[0].delta.content` pieces.
+pub fn chat_completion_text(body: &str) -> Result<String, String> {
+    let body = body.trim();
+    if body.starts_with("data:") {
+        let mut text = String::new();
+        let mut chunks = 0;
+        for payload in body.lines().filter_map(|line| line.trim().strip_prefix("data:")).map(str::trim) {
+            if payload.is_empty() || payload == "[DONE]" {
+                continue;
+            }
+            let chunk: serde_json::Value = serde_json::from_str(payload)
+                .map_err(|e| format!("The server streamed a chunk that is not JSON: {e}"))?;
+            chunks += 1;
+            if let Some(piece) = chunk.pointer("/choices/0/delta/content").and_then(serde_json::Value::as_str) {
+                text.push_str(piece);
+            }
+        }
+        if chunks == 0 {
+            return Err("The server's streamed reply had no data chunks".to_string());
+        }
+        return Ok(text);
+    }
 
-#[derive(Deserialize, Debug)]
-pub struct Choice {
-    pub message: MessageContent,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct MessageContent {
-    pub content: String,
+    let json: serde_json::Value = serde_json::from_str(body).map_err(|e| {
+        let preview: String = body.chars().take(200).collect();
+        format!("The server's reply is not JSON ({e}): {preview}")
+    })?;
+    let message = json.pointer("/choices/0/message").ok_or_else(|| {
+        "The server's reply has no choices[0].message; it does not look OpenAI-compatible".to_string()
+    })?;
+    match message.get("content") {
+        Some(serde_json::Value::String(content)) => Ok(content.clone()),
+        // Reasoning models may answer with no visible content yet a reasoning trace.
+        Some(serde_json::Value::Null) | None if message.get("reasoning_content").is_some() => Ok(String::new()),
+        _ => Err("The server's reply has no message content".to_string()),
+    }
 }
 
 #[derive(Deserialize)]
@@ -319,6 +347,7 @@ pub async fn generate_summary(
             max_tokens: max_tokens_val,
             temperature: temperature_val,
             top_p: top_p_val,
+            stream: false,
         })
     } else {
         serde_json::json!(ClaudeRequest {
@@ -393,21 +422,15 @@ pub async fn generate_summary(
 
         chat_response.complete_text()
     } else {
-        let chat_response = response
-            .json::<ChatResponse>()
+        let body = response
+            .text()
             .await
+            .map_err(|e| format!("Failed to read LLM response: {}", e))?;
+        let content = chat_completion_text(&body)
             .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
 
         info!("🐞 LLM Response received from {}", provider_name(provider));
-
-        let content = chat_response
-            .choices
-            .get(0)
-            .ok_or("No content in LLM response")?
-            .message
-            .content
-            .trim();
-        Ok(content.to_string())
+        Ok(content.trim().to_string())
     }
 }
 
@@ -422,6 +445,36 @@ fn provider_name(provider: &LLMProvider) -> &str {
         LLMProvider::BuiltInAI => "Built-in AI",
         LLMProvider::OpenRouter => "OpenRouter",
         LLMProvider::CustomOpenAI => "Custom OpenAI",
+    }
+}
+
+#[cfg(test)]
+mod chat_completion_tests {
+    use super::chat_completion_text;
+
+    #[test]
+    fn streamed_reply_is_joined_from_its_chunks() {
+        // Shape returned by a router that streams although stream=false was not sent.
+        let body = concat!(
+            r#"data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Ready. "},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Send task."},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"total_tokens":2805}}"#, "\n\n",
+            "data: [DONE]\n",
+        );
+        assert_eq!(chat_completion_text(body).unwrap(), "Ready. Send task.");
+    }
+
+    #[test]
+    fn plain_reply_and_malformed_replies() {
+        assert_eq!(chat_completion_text(r#"{"choices":[{"message":{"content":"Hi"}}]}"#).unwrap(), "Hi");
+        assert_eq!(
+            chat_completion_text(r#"{"choices":[{"message":{"content":null,"reasoning_content":"…"}}]}"#).unwrap(),
+            ""
+        );
+        assert!(chat_completion_text(r#"{"error":{"message":"bad key"}}"#).is_err());
+        assert!(chat_completion_text("<html>gateway</html>").is_err());
+        assert!(chat_completion_text("data: not-json").is_err());
     }
 }
 
