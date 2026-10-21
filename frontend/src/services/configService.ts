@@ -22,22 +22,8 @@ export interface ModelConfig {
   summaryMaxTokens?: number | null;
   /** Explicit `claude` executable path; null means auto-discover (provider 'claude-cli' only) */
   claudeCliPath?: string | null;
-  // Custom OpenAI fields (only populated when provider is 'custom-openai')
-  customOpenAIEndpoint?: string | null;
-  customOpenAIModel?: string | null;
-  customOpenAIApiKey?: string | null;
-  maxTokens?: number | null;
-  temperature?: number | null;
-  topP?: number | null;
-}
-
-export interface CustomOpenAIConfig {
-  endpoint: string;
-  apiKey: string | null;
-  model: string;
-  maxTokens: number | null;
-  temperature: number | null;
-  topP: number | null;
+  /** Saved custom server the summary model runs on (provider 'custom-openai' only) */
+  customProviderId?: string | null;
 }
 
 export interface RecordingPreferences {
@@ -78,45 +64,19 @@ export class ConfigService {
   }
 
   /**
-   * Get custom OpenAI configuration
-   * @returns Promise with CustomOpenAIConfig or null if not configured
+   * Save the summary model. `customProviderId` is required for 'custom-openai'
+   * and ignored by the backend for every other provider.
    */
-  async getCustomOpenAIConfig(): Promise<CustomOpenAIConfig | null> {
-    return invoke<CustomOpenAIConfig | null>('api_get_custom_openai_config');
-  }
-
-  /**
-   * Save custom OpenAI configuration
-   * @param config - CustomOpenAIConfig to save
-   * @returns Promise with result status
-   */
-  async saveCustomOpenAIConfig(config: CustomOpenAIConfig): Promise<{ status: string; message: string }> {
-    return invoke<{ status: string; message: string }>('api_save_custom_openai_config', {
-      endpoint: config.endpoint,
-      apiKey: config.apiKey,
+  async saveModelConfig(config: ModelConfig): Promise<void> {
+    return invoke<void>('api_save_model_config', {
+      provider: config.provider,
       model: config.model,
-      maxTokens: config.maxTokens,
-      temperature: config.temperature,
-      topP: config.topP,
-    });
-  }
-
-  /**
-   * Test custom OpenAI connection
-   * @param endpoint - API endpoint URL
-   * @param apiKey - Optional API key
-   * @param model - Model name
-   * @returns Promise with test result
-   */
-  async testCustomOpenAIConnection(
-    endpoint: string,
-    apiKey: string | null,
-    model: string
-  ): Promise<{ status: string; message: string; http_status?: number }> {
-    return invoke<{ status: string; message: string; http_status?: number }>('api_test_custom_openai_connection', {
-      endpoint,
-      apiKey,
-      model,
+      whisperModel: config.whisperModel,
+      apiKey: config.apiKey ?? null,
+      ollamaEndpoint: config.ollamaEndpoint ?? null,
+      summaryMaxTokens: config.summaryMaxTokens ?? null,
+      claudeCliPath: config.claudeCliPath ?? null,
+      customProviderId: config.provider === 'custom-openai' ? config.customProviderId ?? null : null,
     });
   }
 }

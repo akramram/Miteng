@@ -17,6 +17,7 @@ import { TemplateEditorModal } from '@/components/MeetingDetails/TemplateEditorM
 import { MeetingExportDialog } from '@/components/MeetingDetails/MeetingExportDialog';
 import { PostCallProcessingDialog } from '@/components/MeetingDetails/PostCallProcessingDialog';
 import { ModelConfig } from '@/components/ModelSettingsModal';
+import { configService } from '@/services/configService';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { MeetingHeader } from '@/components/meeting/MeetingHeader';
 import { MeetingDocument } from '@/components/meeting/MeetingDocument';
@@ -213,21 +214,15 @@ export default function PageContent({
   const handleSaveModelConfig = async (config?: ModelConfig) => {
     if (!config) return;
     try {
-      await invoke('api_save_model_config', {
-        provider: config.provider,
-        model: config.model,
-        whisperModel: config.whisperModel,
-        apiKey: config.apiKey ?? null,
-        ollamaEndpoint: config.ollamaEndpoint ?? null,
-        summaryMaxTokens: config.summaryMaxTokens ?? null,
-        claudeCliPath: config.claudeCliPath ?? null,
-      });
+      await configService.saveModelConfig(config);
       const { emit } = await import('@tauri-apps/api/event');
       await emit('model-config-updated', config);
       toast.success('Summary model saved');
     } catch (error) {
       console.error('Failed to save model config:', error);
-      toast.error('Could not save the summary model');
+      toast.error('Could not save the summary model', {
+        description: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 

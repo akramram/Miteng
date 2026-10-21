@@ -353,6 +353,7 @@ pub async fn api_process_transcript<R: Runtime>(
     custom_prompt: Option<String>,
     template_id: Option<String>,
     summary_language: Option<String>,
+    custom_provider_id: Option<String>,
     _auth_token: Option<String>,
 ) -> Result<ProcessTranscriptResponse, String> {
     use uuid::Uuid;
@@ -432,6 +433,7 @@ pub async fn api_process_transcript<R: Runtime>(
             final_prompt,
             final_template_id,
             summary_language,
+            custom_provider_id,
         )
         .await;
     });

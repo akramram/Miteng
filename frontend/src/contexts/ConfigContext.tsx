@@ -236,45 +236,6 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
       try {
         const data = await configService.getModelConfig();
         if (data && data.provider) {
-          // If provider is custom-openai, fetch the additional config
-          if (data.provider === 'custom-openai') {
-            try {
-              const customConfig = await configService.getCustomOpenAIConfig();
-              if (customConfig) {
-                // Merge custom config fields into modelConfig
-                console.log('[ConfigContext] Loading custom OpenAI config:', {
-                  endpoint: customConfig.endpoint,
-                  model: customConfig.model,
-                });
-                const resolvedModel = customConfig.model || data.model || '';
-                setModelConfig(prev => ({
-                  ...prev,
-                  provider: data.provider,
-                  model: resolvedModel || prev.model,
-                  whisperModel: data.whisperModel || prev.whisperModel,
-                  customOpenAIEndpoint: customConfig.endpoint,
-                  customOpenAIModel: customConfig.model,
-                  customOpenAIApiKey: customConfig.apiKey,
-                  maxTokens: customConfig.maxTokens,
-                  temperature: customConfig.temperature,
-                  topP: customConfig.topP,
-                }));
-
-                // Seed per-provider model cache from DB
-                if (resolvedModel) {
-                  const map = JSON.parse(localStorage.getItem('providerModelMap') || '{}');
-                  map[data.provider] = resolvedModel;
-                  localStorage.setItem('providerModelMap', JSON.stringify(map));
-                }
-
-                return; // Early return
-              }
-            } catch (err) {
-              console.error('[ConfigContext] Failed to fetch custom OpenAI config:', err);
-            }
-          }
-
-          // For non-custom-openai providers, just set base config
           setModelConfig(prev => ({
             ...prev,
             provider: data.provider,
@@ -282,12 +243,16 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
             whisperModel: data.whisperModel || prev.whisperModel,
             ollamaEndpoint: data.ollamaEndpoint,
             summaryMaxTokens: data.summaryMaxTokens ?? null,
+            customProviderId: data.customProviderId ?? null,
           }));
 
           // Seed per-provider model cache from DB
           if (data.model) {
             const map = JSON.parse(localStorage.getItem('providerModelMap') || '{}');
             map[data.provider] = data.model;
+            if (data.provider === 'custom-openai' && data.customProviderId) {
+              map[`custom-openai:${data.customProviderId}`] = data.model;
+            }
             localStorage.setItem('providerModelMap', JSON.stringify(map));
           }
         }

@@ -10,6 +10,7 @@
 //! app is already capturing for the user's own meeting notes. It does not hide itself
 //! from other participants or screen shares.
 
+use crate::database::repositories::custom_provider::CustomProviderRepository;
 use crate::database::repositories::person::{
     build_person_context, truncate_chars, PeopleRepository,
 };
@@ -34,13 +35,24 @@ struct ResolvedAssistantModel {
     app_data_dir: PathBuf,
 }
 
+/// Ask AI uses its own selection when `assistantProvider` is set, else the summary one.
 async fn resolve_assistant_model(pool: &SqlitePool) -> Result<ResolvedAssistantModel, String> {
     let config = SettingsRepository::get_model_config(pool)
         .await
         .map_err(|e| format!("Failed to load model config: {}", e))?
         .ok_or_else(|| "No AI model configured. Choose one in Model Settings first.".to_string())?;
 
-    let provider_name = config.provider.clone();
+    let (provider_name, model_name, custom_provider_id) = match config.assistant_provider {
+        Some(provider) => (
+            provider,
+            config.assistant_model.unwrap_or_default(),
+            config.assistant_custom_provider_id,
+        ),
+        None => (config.provider, config.model, config.custom_provider_id),
+    };
+    if model_name.trim().is_empty() {
+        return Err("No model is selected for Ask AI. Choose one in Model Settings.".to_string());
+    }
     let provider = LLMProvider::from_str(&provider_name)?;
     let api_key = if matches!(
         provider,
@@ -59,7 +71,7 @@ async fn resolve_assistant_model(pool: &SqlitePool) -> Result<ResolvedAssistantM
     };
 
     let ollama_endpoint = (provider == LLMProvider::Ollama)
-        .then(|| config.ollama_endpoint.clone())
+        .then_some(config.ollama_endpoint)
         .flatten();
     let claude_cli_path = if provider == LLMProvider::ClaudeCli {
         SettingsRepository::get_claude_cli_path(pool)
@@ -69,12 +81,7 @@ async fn resolve_assistant_model(pool: &SqlitePool) -> Result<ResolvedAssistantM
         None
     };
     let custom = if provider == LLMProvider::CustomOpenAI {
-        Some(
-            SettingsRepository::get_custom_openai_config(pool)
-                .await
-                .map_err(|e| format!("Failed to read custom OpenAI config: {}", e))?
-                .ok_or_else(|| "Custom OpenAI provider selected but not configured".to_string())?,
-        )
+        Some(CustomProviderRepository::resolve(pool, custom_provider_id.as_deref()).await?)
     } else {
         None
     };
@@ -86,12 +93,12 @@ async fn resolve_assistant_model(pool: &SqlitePool) -> Result<ResolvedAssistantM
         custom_openai_temperature,
         custom_openai_top_p,
     ) = match custom {
-        Some(config) => (
-            Some(config.endpoint),
-            config.api_key,
-            config.max_tokens.map(|tokens| tokens as u32),
-            config.temperature,
-            config.top_p,
+        Some(server) => (
+            Some(server.endpoint),
+            server.api_key,
+            server.max_tokens.map(|tokens| tokens as u32),
+            server.temperature,
+            server.top_p,
         ),
         None => (None, None, None, None, None),
     };
@@ -99,7 +106,7 @@ async fn resolve_assistant_model(pool: &SqlitePool) -> Result<ResolvedAssistantM
     Ok(ResolvedAssistantModel {
         provider_name,
         provider,
-        model_name: config.model,
+        model_name,
         api_key: custom_openai_api_key.unwrap_or(api_key),
         ollama_endpoint,
         custom_openai_endpoint,
@@ -505,6 +512,78 @@ mod meeting_context_tests {
         assert!(context.chars().count() <= 3_000 + 200);
         assert!(context.contains("budget approval"));
         assert!(context.contains("[41:40]"));
+    }
+}
+
+#[cfg(test)]
+mod assistant_model_tests {
+    use super::resolve_assistant_model;
+    use crate::database::repositories::custom_provider::{
+        CustomProviderInput, CustomProviderRepository,
+    };
+    use crate::database::repositories::setting::{AssistantModelConfig, SettingsRepository};
+    use crate::summary::llm_client::LLMProvider;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn server(pool: &sqlx::SqlitePool, name: &str, endpoint: &str) -> String {
+        CustomProviderRepository::save(
+            pool,
+            CustomProviderInput {
+                name: name.to_string(),
+                endpoint: endpoint.to_string(),
+                api_key: Some(format!("{name}-key")),
+                models: vec!["m1".to_string(), "m2".to_string()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    #[tokio::test]
+    async fn ask_ai_follows_summaries_until_it_has_its_own_server() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let summary_id = server(&pool, "Summary", "http://summary:1/v1").await;
+        let ask_id = server(&pool, "Ask", "http://ask:2/v1").await;
+        SettingsRepository::save_model_config(
+            &pool, "custom-openai", "m1", "large-v3", None, None, Some(&summary_id),
+        )
+        .await
+        .unwrap();
+
+        let followed = resolve_assistant_model(&pool).await.unwrap();
+        assert_eq!(followed.provider, LLMProvider::CustomOpenAI);
+        assert_eq!(followed.model_name, "m1");
+        assert_eq!(followed.custom_openai_endpoint.as_deref(), Some("http://summary:1/v1"));
+        assert_eq!(followed.api_key, "Summary-key");
+
+        SettingsRepository::save_assistant_model_config(
+            &pool,
+            &AssistantModelConfig {
+                provider: Some("custom-openai".to_string()),
+                model: Some("m2".to_string()),
+                custom_provider_id: Some(ask_id),
+            },
+        )
+        .await
+        .unwrap();
+        let own = resolve_assistant_model(&pool).await.unwrap();
+        assert_eq!(own.model_name, "m2");
+        assert_eq!(own.custom_openai_endpoint.as_deref(), Some("http://ask:2/v1"));
+        assert_eq!(own.api_key, "Ask-key");
+
+        // Clearing the Ask AI selection goes back to following summaries.
+        SettingsRepository::save_assistant_model_config(&pool, &AssistantModelConfig::default())
+            .await
+            .unwrap();
+        let followed = resolve_assistant_model(&pool).await.unwrap();
+        assert_eq!(followed.custom_openai_endpoint.as_deref(), Some("http://summary:1/v1"));
     }
 }
 

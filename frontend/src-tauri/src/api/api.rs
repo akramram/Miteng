@@ -9,12 +9,17 @@ use crate::{
     database::{
         models::MeetingModel,
         repositories::{
-            meeting::MeetingsRepository, setting::SettingsRepository,
-            transcript::TranscriptsRepository, vocabulary::VocabularyRepository,
+            custom_provider::{
+                normalize_endpoint, CustomProvider, CustomProviderInput, CustomProviderRepository,
+            },
+            meeting::MeetingsRepository,
+            setting::{AssistantModelConfig, SettingsRepository},
+            transcript::TranscriptsRepository,
+            vocabulary::VocabularyRepository,
         },
     },
     state::AppState,
-    summary::CustomOpenAIConfig,
+    summary::LLMProvider,
 };
 
 // Hardcoded server URL
@@ -91,6 +96,8 @@ pub struct ModelConfig {
     pub summary_max_tokens: Option<i64>,
     #[serde(rename = "claudeCliPath")]
     pub claude_cli_path: Option<String>,
+    #[serde(rename = "customProviderId")]
+    pub custom_provider_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -644,6 +651,7 @@ pub async fn api_get_model_config<R: Runtime>(
                         ollama_endpoint: config.ollama_endpoint,
                         summary_max_tokens: config.summary_max_tokens,
                         claude_cli_path: config.claude_cli_path,
+                        custom_provider_id: config.custom_provider_id,
                     }))
                 }
                 Err(e) => {
@@ -678,6 +686,7 @@ pub async fn api_save_model_config<R: Runtime>(
     ollama_endpoint: Option<String>,
     summary_max_tokens: Option<i64>,
     claude_cli_path: Option<String>,
+    custom_provider_id: Option<String>,
     _auth_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
@@ -697,6 +706,14 @@ pub async fn api_save_model_config<R: Runtime>(
         return Err("Maximum summary length must be between 1 and 64000, or left empty".into());
     }
 
+    let custom_provider_id = CustomProviderRepository::validate_selection(
+        pool,
+        &provider,
+        &model,
+        custom_provider_id.as_deref(),
+    )
+    .await?;
+
     if let Err(e) = SettingsRepository::save_model_config(
         pool,
         &provider,
@@ -704,6 +721,7 @@ pub async fn api_save_model_config<R: Runtime>(
         &whisper_model,
         ollama_endpoint.as_deref(),
         summary_max_tokens,
+        custom_provider_id.as_deref(),
     )
     .await
     {
@@ -722,7 +740,7 @@ pub async fn api_save_model_config<R: Runtime>(
         }
     }
 
-    // Skip API key saving for custom-openai provider (it uses customOpenAIConfig JSON instead)
+    // Custom servers keep their key with the server (api_save_custom_provider)
     if let Some(key) = api_key {
         if !key.is_empty() && provider != "custom-openai" {
             log_info!("🔑 API key provided, saving...");
@@ -1517,129 +1535,190 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
     }
 }
 
-// ===== CUSTOM OPENAI API COMMANDS =====
+// ===== CUSTOM SERVER (OPENAI-COMPATIBLE) COMMANDS =====
 
-/// Saves the custom OpenAI configuration
-/// This configuration is stored as JSON and includes endpoint, apiKey, model, and optional parameters
+const CUSTOM_PROVIDERS_CHANGED: &str = "custom-providers-changed";
+
+/// Lists saved custom servers, sorted by name.
 #[tauri::command]
-pub async fn api_save_custom_openai_config<R: Runtime>(
-    _app: AppHandle<R>,
+pub async fn api_list_custom_providers(
     state: tauri::State<'_, AppState>,
-    endpoint: String,
-    api_key: Option<String>,
-    model: String,
-    max_tokens: Option<i32>,
-    temperature: Option<f32>,
-    top_p: Option<f32>,
-) -> Result<serde_json::Value, String> {
-    log_info!(
-        "api_save_custom_openai_config called: endpoint='{}', model='{}'",
-        &endpoint,
-        &model
-    );
-
-    // Validate required fields
-    if endpoint.trim().is_empty() {
-        return Err("Endpoint URL is required".to_string());
-    }
-    if model.trim().is_empty() {
-        return Err("Model name is required".to_string());
-    }
-
-    // Validate endpoint URL format
-    if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
-        return Err("Endpoint must start with http:// or https://".to_string());
-    }
-
-    // Validate optional numeric parameters
-    if let Some(temp) = temperature {
-        if !(0.0..=2.0).contains(&temp) {
-            return Err("Temperature must be between 0.0 and 2.0".to_string());
-        }
-    }
-    if let Some(top) = top_p {
-        if !(0.0..=1.0).contains(&top) {
-            return Err("Top P must be between 0.0 and 1.0".to_string());
-        }
-    }
-    if let Some(tokens) = max_tokens {
-        if tokens < 1 {
-            return Err("Max tokens must be at least 1".to_string());
-        }
-    }
-
-    let config = CustomOpenAIConfig {
-        endpoint: endpoint.trim().to_string(),
-        api_key: api_key.filter(|k| !k.trim().is_empty()),
-        model: model.trim().to_string(),
-        max_tokens,
-        temperature,
-        top_p,
-    };
-
-    let pool = state.db_manager.pool();
-
-    match SettingsRepository::save_custom_openai_config(pool, &config).await {
-        Ok(()) => {
-            log_info!("✅ Successfully saved custom OpenAI config for endpoint: {}", config.endpoint);
-            Ok(serde_json::json!({
-                "status": "success",
-                "message": "Custom OpenAI configuration saved successfully"
-            }))
-        }
-        Err(e) => {
-            log_error!("❌ Failed to save custom OpenAI config: {}", e);
-            Err(format!("Failed to save custom OpenAI configuration: {}", e))
-        }
-    }
+) -> Result<Vec<CustomProvider>, String> {
+    CustomProviderRepository::list(state.db_manager.pool())
+        .await
+        .map_err(|e| format!("Failed to load custom servers: {e}"))
 }
 
-/// Gets the custom OpenAI configuration
+/// Creates (no id) or updates a custom server.
 #[tauri::command]
-pub async fn api_get_custom_openai_config<R: Runtime>(
-    _app: AppHandle<R>,
+pub async fn api_save_custom_provider<R: Runtime>(
+    app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
-) -> Result<Option<CustomOpenAIConfig>, String> {
-    log_info!("api_get_custom_openai_config called");
-
-    let pool = state.db_manager.pool();
-
-    match SettingsRepository::get_custom_openai_config(pool).await {
-        Ok(config) => {
-            if let Some(ref c) = config {
-                log_info!("✅ Found custom OpenAI config: endpoint='{}', model='{}'",
-                    c.endpoint, c.model);
-            } else {
-                log_info!("No custom OpenAI config found");
-            }
-            Ok(config)
-        }
-        Err(e) => {
-            log_error!("❌ Failed to get custom OpenAI config: {}", e);
-            Err(format!("Failed to get custom OpenAI configuration: {}", e))
-        }
+    provider: CustomProviderInput,
+) -> Result<CustomProvider, String> {
+    let saved = CustomProviderRepository::save(state.db_manager.pool(), provider)
+        .await
+        .map_err(|e| e.to_string())?;
+    log_info!("Saved custom server '{}' ({})", saved.name, saved.endpoint);
+    if let Err(e) = app.emit(CUSTOM_PROVIDERS_CHANGED, ()) {
+        log_warn!("Failed to emit {}: {}", CUSTOM_PROVIDERS_CHANGED, e);
     }
+    Ok(saved)
+}
+
+/// Deletes a custom server unless summaries or Ask AI currently use it.
+#[tauri::command]
+pub async fn api_delete_custom_provider<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    CustomProviderRepository::delete(state.db_manager.pool(), &id)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Err(e) = app.emit(CUSTOM_PROVIDERS_CHANGED, ()) {
+        log_warn!("Failed to emit {}: {}", CUSTOM_PROVIDERS_CHANGED, e);
+    }
+    Ok(())
+}
+
+/// Reads the model ids an OpenAI-compatible server offers (`GET {endpoint}/models`).
+#[tauri::command]
+pub async fn api_fetch_custom_provider_models(
+    endpoint: String,
+    api_key: Option<String>,
+) -> Result<Vec<String>, String> {
+    let endpoint = normalize_endpoint(&endpoint)?;
+    let url = format!("{}/models", endpoint.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+    let mut request = client.get(&url);
+    if let Some(key) = api_key.as_deref().map(str::trim).filter(|key| !key.is_empty()) {
+        request = request.bearer_auth(key);
+    }
+
+    let response = request.send().await.map_err(|e| {
+        if e.is_timeout() {
+            "The server did not answer within 10 seconds".to_string()
+        } else if e.is_connect() {
+            "Could not connect to the server. Check the URL and that the server is running."
+                .to_string()
+        } else {
+            format!("Could not reach the server: {e}")
+        }
+    })?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Could not read the server's model list: {e}"))?;
+    if !status.is_success() {
+        let detail: String = body.chars().take(200).collect();
+        return Err(format!("The server answered {status} for {url}: {detail}"));
+    }
+    parse_model_ids(&body)
+}
+
+/// Parses an OpenAI `/models` response (`{"data": [{"id": "..."}]}`) into sorted, unique ids.
+fn parse_model_ids(body: &str) -> Result<Vec<String>, String> {
+    let json: serde_json::Value = serde_json::from_str(body)
+        .map_err(|_| "The server's /models response is not JSON".to_string())?;
+    let data = json
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            "The server's /models response has no \"data\" list; type the model name instead"
+                .to_string()
+        })?;
+    let mut ids: Vec<String> = data
+        .iter()
+        .filter_map(|model| model.get("id").and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+/// Ask AI selection; `provider: null` means it follows the summary selection.
+#[tauri::command]
+pub async fn api_get_assistant_model_config(
+    state: tauri::State<'_, AppState>,
+) -> Result<AssistantModelConfig, String> {
+    SettingsRepository::get_assistant_model_config(state.db_manager.pool())
+        .await
+        .map_err(|e| format!("Failed to load the Ask AI model: {e}"))
+}
+
+/// Saves the Ask AI selection; a null provider clears it so Ask AI follows summaries.
+#[tauri::command]
+pub async fn api_save_assistant_model_config(
+    state: tauri::State<'_, AppState>,
+    provider: Option<String>,
+    model: Option<String>,
+    custom_provider_id: Option<String>,
+) -> Result<(), String> {
+    let pool = state.db_manager.pool();
+    let provider = provider
+        .map(|provider| provider.trim().to_string())
+        .filter(|provider| !provider.is_empty());
+    let config = match provider {
+        None => AssistantModelConfig::default(),
+        Some(provider) => {
+            LLMProvider::from_str(&provider)?;
+            let model = model
+                .map(|model| model.trim().to_string())
+                .filter(|model| !model.is_empty())
+                .ok_or_else(|| "Choose a model for Ask AI".to_string())?;
+            let custom_provider_id = CustomProviderRepository::validate_selection(
+                pool,
+                &provider,
+                &model,
+                custom_provider_id.as_deref(),
+            )
+            .await?;
+            AssistantModelConfig {
+                provider: Some(provider),
+                model: Some(model),
+                custom_provider_id,
+            }
+        }
+    };
+    let saved = SettingsRepository::save_assistant_model_config(pool, &config)
+        .await
+        .map_err(|e| format!("Failed to save the Ask AI model: {e}"))?;
+    if !saved {
+        return Err("Choose a summary model first, then pick one for Ask AI".to_string());
+    }
+    log_info!(
+        "Saved Ask AI model: provider={:?}, model={:?}",
+        config.provider,
+        config.model
+    );
+    Ok(())
 }
 
 /// Tests the connection to a custom OpenAI-compatible endpoint
 /// Makes a minimal request to verify the endpoint is reachable and responds correctly
 #[tauri::command]
-pub async fn api_test_custom_openai_connection<R: Runtime>(
+pub async fn api_test_custom_provider_connection<R: Runtime>(
     _app: AppHandle<R>,
     endpoint: String,
     api_key: Option<String>,
     model: String,
 ) -> Result<serde_json::Value, String> {
     log_info!(
-        "api_test_custom_openai_connection called: endpoint='{}', model='{}'",
+        "api_test_custom_provider_connection called: endpoint='{}', model='{}'",
         &endpoint,
         &model
     );
 
-    // Validate endpoint URL format
-    if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
-        return Err("Endpoint must start with http:// or https://".to_string());
-    }
+    let endpoint = normalize_endpoint(&endpoint)?;
 
     // Build the URL - append /chat/completions to the base endpoint
     let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
@@ -1732,5 +1811,18 @@ pub async fn api_test_custom_openai_connection<R: Runtime>(
                 Err(format!("Connection failed: {}", e))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod custom_provider_tests {
+    use super::parse_model_ids;
+
+    #[test]
+    fn model_list_is_sorted_and_unique() {
+        let body = r#"{"object":"list","data":[{"id":"b"},{"id":"a"},{"id":"b"},{"id":" "},{"x":1}]}"#;
+        assert_eq!(parse_model_ids(body).unwrap(), vec!["a".to_string(), "b".to_string()]);
+        assert!(parse_model_ids(r#"{"models":[]}"#).is_err());
+        assert!(parse_model_ids("<html>").is_err());
     }
 }

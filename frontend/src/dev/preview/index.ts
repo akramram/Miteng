@@ -78,7 +78,83 @@ const state = {
     meetings: number;
     from: string[];
   }>,
+  customProviders: [
+    {
+      id: 'custom-openrouter',
+      name: 'OpenRouter',
+      endpoint: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-or-preview',
+      models: ['anthropic/claude-sonnet-4', 'openai/gpt-4o-mini', 'meta-llama/llama-3.1-70b-instruct'],
+      maxTokens: null,
+      temperature: null,
+      topP: null,
+    },
+    {
+      id: 'custom-office-vllm',
+      name: 'Office vLLM',
+      endpoint: 'http://10.0.0.20:8000/v1',
+      apiKey: null,
+      models: ['qwen2.5-32b-instruct'],
+      maxTokens: 4096,
+      temperature: 0.3,
+      topP: null,
+    },
+  ] as PreviewCustomProvider[],
+  modelConfig: {
+    provider: 'custom-openai',
+    model: 'openai/gpt-4o-mini',
+    whisperModel: 'large-v3',
+    ollamaEndpoint: null as string | null,
+    summaryMaxTokens: null as number | null,
+    claudeCliPath: null as string | null,
+    customProviderId: 'custom-openrouter' as string | null,
+  },
+  assistantModel: { provider: null as string | null, model: null as string | null, customProviderId: null as string | null },
 };
+
+interface PreviewCustomProvider {
+  id: string;
+  name: string;
+  endpoint: string;
+  apiKey: string | null;
+  models: string[];
+  maxTokens: number | null;
+  temperature: number | null;
+  topP: number | null;
+}
+
+/** Mirrors the backend's validation so the settings UI shows the same errors. */
+function validCustomProvider(input: Args): PreviewCustomProvider {
+  const name = String(input.name ?? '').trim();
+  if (!name) throw new Error('Name is required');
+  const clash = state.customProviders.find(
+    (entry) => entry.id !== input.id && entry.name.toLowerCase() === name.toLowerCase(),
+  );
+  if (clash) throw new Error(`A server named ${clash.name} already exists`);
+  const endpoint = String(input.endpoint ?? '').trim();
+  if (!/^https?:\/\/\S+$/i.test(endpoint)) throw new Error('Endpoint must be an http:// or https:// URL');
+  const models = [...new Set(((input.models ?? []) as string[]).map((model) => model.trim()).filter(Boolean))];
+  if (models.length === 0) throw new Error('Add at least one model');
+  if (input.maxTokens != null && input.maxTokens < 1) throw new Error('Max tokens must be at least 1');
+  if (input.temperature != null && (input.temperature < 0 || input.temperature > 2)) throw new Error('Temperature must be between 0 and 2');
+  if (input.topP != null && (input.topP < 0 || input.topP > 1)) throw new Error('Top P must be between 0 and 1');
+  return {
+    id: input.id ?? `custom-${newId('server')}`,
+    name,
+    endpoint,
+    apiKey: String(input.apiKey ?? '').trim() || null,
+    models,
+    maxTokens: input.maxTokens ?? null,
+    temperature: input.temperature ?? null,
+    topP: input.topP ?? null,
+  };
+}
+
+function requireCustomProvider(provider: string | null, id: string | null | undefined) {
+  if (provider !== 'custom-openai') return null;
+  if (!id || !state.customProviders.some((entry) => entry.id === id)) throw new Error('Choose a saved custom server');
+  return id;
+}
 
 const RUNNING_APPS = [
   { id: 'Zoom.exe', name: 'Zoom Workplace', executable: 'Zoom.exe', pid: 4120, has_audio: true, icon: null },
@@ -469,8 +545,76 @@ function handle(cmd: string, args: Args): unknown {
       return null;
     case 'get_waveform_peaks':
       return new Promise((resolve) => setTimeout(() => resolve(previewPeaks(String(args.filePath).slice(PREVIEW_AUDIO.length))), 300));
-    case 'api_get_model_config':
-      return { provider: 'ollama', model: 'llama3.2:3b', whisperModel: 'large-v3', apiKey: null, ollamaEndpoint: null };
+    case 'api_get_model_config': {
+      const config = state.modelConfig;
+      const server = state.customProviders.find((entry) => entry.id === config.customProviderId);
+      return { ...config, apiKey: config.provider === 'custom-openai' ? server?.apiKey ?? null : null };
+    }
+    case 'api_save_model_config': {
+      if (!String(args.model ?? '').trim()) throw new Error('Choose a model');
+      const customProviderId = requireCustomProvider(args.provider, args.customProviderId);
+      state.modelConfig = {
+        provider: args.provider,
+        model: String(args.model).trim(),
+        whisperModel: args.whisperModel ?? state.modelConfig.whisperModel,
+        ollamaEndpoint: args.ollamaEndpoint ?? null,
+        summaryMaxTokens: args.summaryMaxTokens ?? null,
+        claudeCliPath: args.claudeCliPath ?? state.modelConfig.claudeCliPath,
+        customProviderId,
+      };
+      return null;
+    }
+    case 'api_get_assistant_model_config':
+      return { ...state.assistantModel };
+    case 'api_save_assistant_model_config': {
+      if (!args.provider) {
+        state.assistantModel = { provider: null, model: null, customProviderId: null };
+        return null;
+      }
+      if (!String(args.model ?? '').trim()) throw new Error('Choose a model');
+      state.assistantModel = {
+        provider: args.provider,
+        model: String(args.model).trim(),
+        customProviderId: requireCustomProvider(args.provider, args.customProviderId),
+      };
+      return null;
+    }
+    case 'api_list_custom_providers':
+      return [...state.customProviders]
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+        .map((entry) => ({ ...entry, models: [...entry.models] }));
+    case 'api_save_custom_provider': {
+      const saved = validCustomProvider(args.provider ?? {});
+      const index = state.customProviders.findIndex((entry) => entry.id === saved.id);
+      if (index >= 0) state.customProviders[index] = saved;
+      else state.customProviders.push(saved);
+      return { ...saved, models: [...saved.models] };
+    }
+    case 'api_delete_custom_provider': {
+      const server = state.customProviders.find((entry) => entry.id === args.id);
+      if (!server) throw new Error('Custom server not found');
+      if (state.modelConfig.provider === 'custom-openai' && state.modelConfig.customProviderId === server.id) {
+        throw new Error(`${server.name} is selected for summaries; choose another model first`);
+      }
+      if (state.assistantModel.provider === 'custom-openai' && state.assistantModel.customProviderId === server.id) {
+        throw new Error(`${server.name} is selected for Ask AI; choose another model first`);
+      }
+      state.customProviders = state.customProviders.filter((entry) => entry.id !== server.id);
+      return null;
+    }
+    case 'api_fetch_custom_provider_models': {
+      if (!/^https?:\/\/\S+$/i.test(String(args.endpoint ?? '').trim())) {
+        throw new Error('Endpoint must be an http:// or https:// URL');
+      }
+      const { promise, resolve } = Promise.withResolvers<string[]>();
+      setTimeout(() => resolve(['gpt-4o-mini', 'llama-3.1-8b-instruct', 'mistral-small-latest', 'qwen2.5-32b-instruct']), 500);
+      return promise;
+    }
+    case 'api_test_custom_provider_connection': {
+      const { promise, resolve } = Promise.withResolvers<{ status: string; message: string }>();
+      setTimeout(() => resolve({ status: 'success', message: `${args.model} answered: ready` }), 600);
+      return promise;
+    }
     case 'api_get_transcript_config':
       return { provider: 'parakeet', model: 'parakeet-tdt-0.6b-v3-int8', apiKey: null };
     case 'api_list_templates':

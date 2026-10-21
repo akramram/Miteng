@@ -1,4 +1,5 @@
 use crate::database::repositories::{
+    custom_provider::CustomProviderRepository,
     meeting::MeetingsRepository,
     meeting_series::{MeetingSeriesRepository, PreviousPart},
     setting::SettingsRepository,
@@ -359,6 +360,7 @@ impl SummaryService {
         custom_prompt: String,
         template_id: String,
         summary_language: Option<String>,
+        custom_provider_id: Option<String>,
     ) {
         let _run_guard = SummaryRunGuard {
             meeting_id: meeting_id.clone(),
@@ -448,27 +450,32 @@ impl SummaryService {
             None
         };
 
-        // Get CustomOpenAI config if provider is CustomOpenAI
+        // Resolve the custom server: the one sent with the request, else the summary default
         let (custom_openai_endpoint, custom_openai_api_key, custom_openai_max_tokens, custom_openai_temperature, custom_openai_top_p) =
             if provider == LLMProvider::CustomOpenAI {
-                match SettingsRepository::get_custom_openai_config(&pool).await {
-                    Ok(Some(config)) => {
-                        info!("✓ Using custom OpenAI endpoint: {}", config.endpoint);
+                let selected_id = match custom_provider_id.filter(|id| !id.trim().is_empty()) {
+                    Some(id) => Some(id),
+                    None => match SettingsRepository::get_model_config(&pool).await {
+                        Ok(config) => config.and_then(|config| config.custom_provider_id),
+                        Err(e) => {
+                            let err_msg = format!("Failed to read the selected custom server: {}", e);
+                            Self::update_process_failed(&pool, &meeting_id, &err_msg).await;
+                            return;
+                        }
+                    },
+                };
+                match CustomProviderRepository::resolve(&pool, selected_id.as_deref()).await {
+                    Ok(server) => {
+                        info!("✓ Using custom server '{}': {}", server.name, server.endpoint);
                         (
-                            Some(config.endpoint),
-                            config.api_key,
-                            config.max_tokens.map(|t| t as u32),
-                            config.temperature,
-                            config.top_p,
+                            Some(server.endpoint),
+                            server.api_key,
+                            server.max_tokens.map(|t| t as u32),
+                            server.temperature,
+                            server.top_p,
                         )
                     }
-                    Ok(None) => {
-                        let err_msg = "Custom OpenAI provider selected but no configuration found";
-                        Self::update_process_failed(&pool, &meeting_id, err_msg).await;
-                        return;
-                    }
-                    Err(e) => {
-                        let err_msg = format!("Failed to retrieve custom OpenAI config: {}", e);
+                    Err(err_msg) => {
                         Self::update_process_failed(&pool, &meeting_id, &err_msg).await;
                         return;
                     }

@@ -856,10 +856,14 @@ pub fn run() {
             api::test_backend_connection,
             api::debug_backend_connection,
             api::open_external_url,
-            // Custom OpenAI commands
-            api::api_save_custom_openai_config,
-            api::api_get_custom_openai_config,
-            api::api_test_custom_openai_connection,
+            // Custom server (OpenAI-compatible) commands
+            api::api_list_custom_providers,
+            api::api_save_custom_provider,
+            api::api_delete_custom_provider,
+            api::api_fetch_custom_provider_models,
+            api::api_test_custom_provider_connection,
+            api::api_get_assistant_model_config,
+            api::api_save_assistant_model_config,
             // Summary commands
             summary::commands::api_process_transcript,
             summary::commands::api_get_summary,

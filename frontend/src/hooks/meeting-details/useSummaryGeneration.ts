@@ -17,6 +17,7 @@ import {
   readMeetingSummaryLanguage,
   readCachedDetectedSummaryLanguage,
 } from '@/lib/summary-language-preferences';
+import { CUSTOM_PROVIDER, listCustomProviders, providerDisplayName } from '@/lib/custom-providers';
 
 /**
  * The Claude Code CLI provider depends on software outside this app, so it can
@@ -335,9 +336,14 @@ export function useSummaryGeneration({
         if (!isCurrentRequest()) return false;
       }
 
-      // Show toast notification for generation start
+      // Show toast notification for generation start; custom servers go by their own name
+      const providerLabel = providerDisplayName(
+        modelConfig,
+        modelConfig.provider === CUSTOM_PROVIDER ? await listCustomProviders().catch(() => null) : null
+      );
+      if (!isCurrentRequest()) return false;
       toast.info(`${isRegeneration ? 'Regenerating' : 'Generating'} summary...`, {
-        description: `Using ${modelConfig.provider}/${modelConfig.model}`,
+        description: `Using ${providerLabel}/${modelConfig.model}`,
         duration: 3000,
       });
 
@@ -353,6 +359,7 @@ export function useSummaryGeneration({
         text: transcriptText,
         model: modelConfig.provider,
         modelName: modelConfig.model,
+        customProviderId: modelConfig.provider === CUSTOM_PROVIDER ? modelConfig.customProviderId ?? null : null,
         meetingId: meeting.id,
         chunkSize: 40000,
         overlap: 1000,

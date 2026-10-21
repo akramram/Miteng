@@ -1,5 +1,5 @@
 use crate::database::models::{Setting, TranscriptSetting};
-use crate::summary::CustomOpenAIConfig;
+use crate::database::repositories::custom_provider::CUSTOM_PROVIDER;
 use sqlx::SqlitePool;
 
 #[derive(serde::Deserialize, Debug)]
@@ -20,6 +20,15 @@ pub struct SaveTranscriptConfigRequest {
     pub model: String,
     #[serde(rename = "apiKey")]
     pub api_key: Option<String>,
+}
+
+/// Ask AI selection. `provider: None` means Ask AI follows the summary selection.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistantModelConfig {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub custom_provider_id: Option<String>,
 }
 
 pub struct SettingsRepository;
@@ -45,18 +54,20 @@ impl SettingsRepository {
         whisper_model: &str,
         ollama_endpoint: Option<&str>,
         summary_max_tokens: Option<i64>,
+        custom_provider_id: Option<&str>,
     ) -> std::result::Result<(), sqlx::Error> {
         // Using id '1' for backward compatibility
         sqlx::query(
             r#"
-            INSERT INTO settings (id, provider, model, whisperModel, ollamaEndpoint, summaryMaxTokens)
-            VALUES ('1', $1, $2, $3, $4, $5)
+            INSERT INTO settings (id, provider, model, whisperModel, ollamaEndpoint, summaryMaxTokens, customProviderId)
+            VALUES ('1', $1, $2, $3, $4, $5, $6)
             ON CONFLICT(id) DO UPDATE SET
                 provider = excluded.provider,
                 model = excluded.model,
                 whisperModel = excluded.whisperModel,
                 ollamaEndpoint = excluded.ollamaEndpoint,
-                summaryMaxTokens = excluded.summaryMaxTokens
+                summaryMaxTokens = excluded.summaryMaxTokens,
+                customProviderId = excluded.customProviderId
             "#,
         )
         .bind(provider)
@@ -64,10 +75,44 @@ impl SettingsRepository {
         .bind(whisper_model)
         .bind(ollama_endpoint)
         .bind(summary_max_tokens)
+        .bind(custom_provider_id)
         .execute(pool)
         .await?;
 
         Ok(())
+    }
+
+    pub async fn get_assistant_model_config(
+        pool: &SqlitePool,
+    ) -> std::result::Result<AssistantModelConfig, sqlx::Error> {
+        let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT assistantProvider, assistantModel, assistantCustomProviderId FROM settings WHERE id = '1'",
+        )
+        .fetch_optional(pool)
+        .await?;
+        Ok(row
+            .map(|(provider, model, custom_provider_id)| AssistantModelConfig {
+                provider,
+                model,
+                custom_provider_id,
+            })
+            .unwrap_or_default())
+    }
+
+    /// Stores the Ask AI selection; returns false when no settings row exists yet.
+    pub async fn save_assistant_model_config(
+        pool: &SqlitePool,
+        config: &AssistantModelConfig,
+    ) -> std::result::Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE settings SET assistantProvider = ?, assistantModel = ?, assistantCustomProviderId = ? WHERE id = '1'",
+        )
+        .bind(&config.provider)
+        .bind(&config.model)
+        .bind(&config.custom_provider_id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// Read the configured cap on summary output length.
@@ -87,10 +132,10 @@ impl SettingsRepository {
         provider: &str,
         api_key: &str,
     ) -> std::result::Result<(), sqlx::Error> {
-        // Custom OpenAI uses JSON config (customOpenAIConfig) instead of a separate API key column
-        if provider == "custom-openai" {
+        // Custom server keys are saved with the server (api_save_custom_provider)
+        if provider == CUSTOM_PROVIDER {
             return Err(sqlx::Error::Protocol(
-                "custom-openai provider should use save_custom_openai_config() instead of save_api_key()".into(),
+                "custom-openai keys are saved with the custom server, not with save_api_key()".into(),
             ));
         }
 
@@ -127,10 +172,14 @@ impl SettingsRepository {
         pool: &SqlitePool,
         provider: &str,
     ) -> std::result::Result<Option<String>, sqlx::Error> {
-        // Custom OpenAI uses JSON config - extract API key from there
-        if provider == "custom-openai" {
-            let config = Self::get_custom_openai_config(pool).await?;
-            return Ok(config.and_then(|c| c.api_key));
+        // Custom servers keep their own key; use the server selected for summaries
+        if provider == CUSTOM_PROVIDER {
+            let key: Option<Option<String>> = sqlx::query_scalar(
+                "SELECT p.api_key FROM settings s JOIN custom_providers p ON p.id = s.customProviderId WHERE s.id = '1'",
+            )
+            .fetch_optional(pool)
+            .await?;
+            return Ok(key.flatten());
         }
 
         let api_key_column = match provider {
@@ -292,11 +341,15 @@ impl SettingsRepository {
         pool: &SqlitePool,
         provider: &str,
     ) -> std::result::Result<(), sqlx::Error> {
-        // Custom OpenAI uses JSON config - clear the entire config
-        if provider == "custom-openai" {
-            sqlx::query("UPDATE settings SET customOpenAIConfig = NULL WHERE id = '1'")
-                .execute(pool)
-                .await?;
+        // Custom servers keep their own key; clear the server selected for summaries
+        if provider == CUSTOM_PROVIDER {
+            sqlx::query(
+                "UPDATE custom_providers SET api_key = NULL, updated_at = ? \
+                 WHERE id = (SELECT customProviderId FROM settings WHERE id = '1')",
+            )
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(pool)
+            .await?;
             return Ok(());
         }
 
@@ -357,86 +410,6 @@ impl SettingsRepository {
             "#,
         )
         .bind(normalised)
-        .execute(pool)
-        .await?;
-
-        Ok(())
-    }
-
-    // ===== CUSTOM OPENAI CONFIG METHODS =====
-
-    /// Gets the custom OpenAI configuration from JSON
-    ///
-    /// # Returns
-    /// * `Ok(Some(CustomOpenAIConfig))` - Config exists and is valid JSON
-    /// * `Ok(None)` - No config stored
-    /// * `Err(sqlx::Error)` - Database error
-    pub async fn get_custom_openai_config(
-        pool: &SqlitePool,
-    ) -> std::result::Result<Option<CustomOpenAIConfig>, sqlx::Error> {
-        use sqlx::Row;
-
-        let row = sqlx::query(
-            r#"
-            SELECT customOpenAIConfig
-            FROM settings
-            WHERE id = '1'
-            LIMIT 1
-            "#
-        )
-        .fetch_optional(pool)
-        .await?;
-
-        match row {
-            Some(record) => {
-                let config_json: Option<String> = record.get("customOpenAIConfig");
-
-                if let Some(json) = config_json {
-                    // Parse JSON into CustomOpenAIConfig
-                    let config: CustomOpenAIConfig = serde_json::from_str(&json)
-                        .map_err(|e| sqlx::Error::Protocol(
-                            format!("Invalid JSON in customOpenAIConfig: {}", e).into()
-                        ))?;
-
-                    Ok(Some(config))
-                } else {
-                    Ok(None)
-                }
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Saves the custom OpenAI configuration as JSON
-    ///
-    /// # Arguments
-    /// * `pool` - Database connection pool
-    /// * `config` - CustomOpenAIConfig to save (includes endpoint, apiKey, model, maxTokens, temperature, topP)
-    ///
-    /// # Returns
-    /// * `Ok(())` - Config saved successfully
-    /// * `Err(sqlx::Error)` - Database or JSON serialization error
-    pub async fn save_custom_openai_config(
-        pool: &SqlitePool,
-        config: &CustomOpenAIConfig,
-    ) -> std::result::Result<(), sqlx::Error> {
-        // Serialize config to JSON
-        let config_json = serde_json::to_string(config)
-            .map_err(|e| sqlx::Error::Protocol(
-                format!("Failed to serialize config to JSON: {}", e).into()
-            ))?;
-
-        // Upsert into settings table
-        sqlx::query(
-            r#"
-            INSERT INTO settings (id, provider, model, whisperModel, customOpenAIConfig)
-            VALUES ('1', 'custom-openai', $1, 'large-v3', $2)
-            ON CONFLICT(id) DO UPDATE SET
-                customOpenAIConfig = excluded.customOpenAIConfig
-            "#,
-        )
-        .bind(&config.model)
-        .bind(config_json)
         .execute(pool)
         .await?;
 

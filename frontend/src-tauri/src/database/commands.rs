@@ -199,6 +199,7 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
         "large-v3", // Default whisper model (unused for builtin but required)
         None,
         None, // summaryMaxTokens: provider default
+        None, // customProviderId: only for custom-openai
     ).await {
         error!("Failed to set default summary model config: {}", e);
     }

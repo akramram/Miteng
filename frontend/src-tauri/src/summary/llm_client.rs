@@ -471,9 +471,9 @@ mod claude_output_tests {
         use crate::database::repositories::setting::SettingsRepository;
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-        SettingsRepository::save_model_config(&pool, "claude", "claude-sonnet-4-5", "large-v3", None, Some(32000)).await.unwrap();
+        SettingsRepository::save_model_config(&pool, "claude", "claude-sonnet-4-5", "large-v3", None, Some(32000), None).await.unwrap();
         assert_eq!(SettingsRepository::get_summary_max_tokens(&pool).await.unwrap(), Some(32000));
-        SettingsRepository::save_model_config(&pool, "claude", "claude-sonnet-4-5", "large-v3", None, None).await.unwrap();
+        SettingsRepository::save_model_config(&pool, "claude", "claude-sonnet-4-5", "large-v3", None, None, None).await.unwrap();
         assert_eq!(SettingsRepository::get_summary_max_tokens(&pool).await.unwrap(), None);
         assert!(!include_bytes!("../../migrations/20260914010000_add_summary_max_tokens.sql").contains(&b'\r'));
     }

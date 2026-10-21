@@ -94,10 +94,20 @@ pub struct Setting {
     #[sqlx(rename = "ollamaEndpoint")]
     #[serde(rename = "ollamaEndpoint")]
     pub ollama_endpoint: Option<String>,
-    /// Custom OpenAI-compatible endpoint configuration stored as JSON
-    #[sqlx(rename = "customOpenAIConfig")]
-    #[serde(rename = "customOpenAIConfig")]
-    pub custom_openai_config: Option<String>,
+    /// Custom server used for summaries while `provider` is `custom-openai`
+    #[sqlx(rename = "customProviderId")]
+    #[serde(rename = "customProviderId")]
+    pub custom_provider_id: Option<String>,
+    /// Ask AI provider; None means Ask AI follows the summary selection
+    #[sqlx(rename = "assistantProvider")]
+    #[serde(rename = "assistantProvider")]
+    pub assistant_provider: Option<String>,
+    #[sqlx(rename = "assistantModel")]
+    #[serde(rename = "assistantModel")]
+    pub assistant_model: Option<String>,
+    #[sqlx(rename = "assistantCustomProviderId")]
+    #[serde(rename = "assistantCustomProviderId")]
+    pub assistant_custom_provider_id: Option<String>,
     /// Optional cap on summary output length; None means the provider default
     #[sqlx(rename = "summaryMaxTokens")]
     #[serde(rename = "summaryMaxTokens")]
@@ -106,15 +116,6 @@ pub struct Setting {
     #[sqlx(rename = "claudeCliPath")]
     #[serde(rename = "claudeCliPath")]
     pub claude_cli_path: Option<String>,
-}
-
-impl Setting {
-    /// Parse the custom OpenAI config from JSON string
-    pub fn get_custom_openai_config(&self) -> Option<crate::summary::CustomOpenAIConfig> {
-        self.custom_openai_config.as_ref().and_then(|json| {
-            serde_json::from_str(json).ok()
-        })
-    }
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

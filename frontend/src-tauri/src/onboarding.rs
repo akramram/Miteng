@@ -188,6 +188,7 @@ pub async fn complete_onboarding<R: Runtime>(
         "large-v3",
         None,
         None, // summaryMaxTokens: provider default
+        None, // customProviderId: only for custom-openai
     ).await {
         error!("Failed to save builtin-ai model config: {}", e);
         return Err(format!("Failed to save builtin-ai model config: {}", e));

@@ -17,7 +17,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
-import { Lock, Unlock, Eye, EyeOff, RefreshCw, CheckCircle2, XCircle, ChevronDown, ChevronUp, Download, ExternalLink, Check, ChevronsUpDown } from 'lucide-react';
+import { Lock, Unlock, Eye, EyeOff, RefreshCw, CheckCircle2, XCircle, ChevronDown, ChevronUp, Download, ExternalLink, Check, ChevronsUpDown, Pencil } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   Command,
@@ -39,25 +39,17 @@ import {
 } from '@/lib/claude-cli';
 import { toast } from 'sonner';
 import { claudeOutputBudget, parseClaudeOutputTokens } from '@/lib/claude-output-tokens';
+import { Combobox } from '@/components/ui/combobox';
+import { IconButton } from '@/components/ui/icon-button';
+import { CustomServerDialog } from '@/components/settings/CustomServers';
+import { useCustomProviders } from '@/hooks/useCustomProviders';
+import { CUSTOM_PROVIDER, type CustomProvider } from '@/lib/custom-providers';
+import type { ModelConfig } from '@/services/configService';
 
-export interface ModelConfig {
-  provider: 'ollama' | 'groq' | 'claude' | 'claude-cli' | 'openai' | 'openrouter' | 'builtin-ai' | 'custom-openai';
-  model: string;
-  whisperModel: string;
-  apiKey?: string | null;
-  ollamaEndpoint?: string | null;
-  /** Cap on summary output length; null uses the provider default */
-  summaryMaxTokens?: number | null;
-  // Claude Code CLI fields (only meaningful when provider is 'claude-cli')
-  claudeCliPath?: string | null;
-  // Custom OpenAI fields
-  customOpenAIEndpoint?: string | null;
-  customOpenAIModel?: string | null;
-  customOpenAIApiKey?: string | null;
-  maxTokens?: number | null;
-  temperature?: number | null;
-  topP?: number | null;
-}
+export type { ModelConfig };
+
+/** Select value that opens the add-server form instead of choosing a server. */
+const ADD_SERVER_VALUE = '__add_server__';
 
 interface OllamaModel {
   name: string;
@@ -121,6 +113,11 @@ interface ModelSettingsModalProps {
   onSave: (config: ModelConfig) => void;
   skipInitialFetch?: boolean; // Optional: skip fetching config from backend if parent manages it
   layout?: 'inline' | 'dialog';
+  /**
+   * 'assistant' edits the Ask AI model: state comes only from props (never from
+   * ConfigContext, which holds the summary model) and summary-only fields are hidden.
+   */
+  scope?: 'summary' | 'assistant';
 }
 
 export function ModelSettingsModal({
@@ -129,13 +126,19 @@ export function ModelSettingsModal({
   onSave,
   skipInitialFetch = false,
   layout = 'inline',
+  scope = 'summary',
 }: ModelSettingsModalProps) {
-  // Use ConfigContext if available, fallback to props for backward compatibility
+  // The summary model lives in ConfigContext when available; the Ask AI model is props-only.
   const configContext = useConfig();
-  const modelConfig = configContext?.modelConfig || propsModelConfig;
-  const setModelConfig = configContext?.setModelConfig || propsSetModelConfig;
+  const isAssistant = scope === 'assistant';
+  const modelConfig = (!isAssistant && configContext?.modelConfig) || propsModelConfig;
+  const setModelConfig = (!isAssistant && configContext?.setModelConfig) || propsSetModelConfig;
   const providerApiKeys = configContext?.providerApiKeys;
   const updateProviderApiKey = configContext?.updateProviderApiKey;
+  const customProviders = useCustomProviders();
+  const selectedServer = customProviders?.find((entry) => entry.id === modelConfig.customProviderId) ?? null;
+  const [serverDialogOpen, setServerDialogOpen] = useState<boolean>(false);
+  const [serverDialogTarget, setServerDialogTarget] = useState<CustomProvider | null>(null);
 
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [error, setError] = useState<string>('');
@@ -158,16 +161,6 @@ export function ModelSettingsModal({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isEndpointSectionCollapsed, setIsEndpointSectionCollapsed] = useState<boolean>(true); // Collapsed by default
   const [ollamaNotInstalled, setOllamaNotInstalled] = useState<boolean>(false); // Track if Ollama is not installed
-
-  // Custom OpenAI state
-  const [customOpenAIEndpoint, setCustomOpenAIEndpoint] = useState<string>(modelConfig.customOpenAIEndpoint || '');
-  const [customOpenAIModel, setCustomOpenAIModel] = useState<string>(modelConfig.customOpenAIModel || '');
-  const [customOpenAIApiKey, setCustomOpenAIApiKey] = useState<string>(modelConfig.customOpenAIApiKey || '');
-  const [customMaxTokens, setCustomMaxTokens] = useState<string>(modelConfig.maxTokens?.toString() || '');
-  const [customTemperature, setCustomTemperature] = useState<string>(modelConfig.temperature?.toString() || '');
-  const [customTopP, setCustomTopP] = useState<string>(modelConfig.topP?.toString() || '');
-  const [isCustomOpenAIAdvancedOpen, setIsCustomOpenAIAdvancedOpen] = useState<boolean>(false);
-  const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
 
   // Summary output cap, kept as a string so the field can be emptied
   const [summaryMaxTokens, setSummaryMaxTokens] = useState<string>(
@@ -254,7 +247,7 @@ export function ModelSettingsModal({
     openai: openaiModels.length > 0 ? openaiModels : OPENAI_FALLBACK_MODELS,
     openrouter: openRouterModels.map((m) => m.id),
     'builtin-ai': builtinAiModels.map((m) => m.name),
-    'custom-openai': customOpenAIModel ? [customOpenAIModel] : [], // User specifies model manually
+    'custom-openai': selectedServer?.models ?? [],
   };
 
   const requiresApiKey =
@@ -267,10 +260,10 @@ export function ModelSettingsModal({
   const ollamaEndpointChanged = modelConfig.provider === 'ollama' &&
     ollamaEndpoint.trim() !== lastFetchedEndpoint.trim();
 
-  // Custom OpenAI validation
-  const isCustomOpenAIInvalid = modelConfig.provider === 'custom-openai' && (
-    !customOpenAIEndpoint.trim() ||
-    !customOpenAIModel.trim()
+  // A custom server must still exist and a model name must be chosen or typed
+  const isCustomServerInvalid = modelConfig.provider === CUSTOM_PROVIDER && (
+    !selectedServer ||
+    !modelConfig.model?.trim()
   );
 
   // The CLI provider has no key to validate, so readiness is the gate instead:
@@ -281,13 +274,13 @@ export function ModelSettingsModal({
   const isDoneDisabled =
     (requiresApiKey && (!apiKey || (typeof apiKey === 'string' && !apiKey.trim()))) ||
     (modelConfig.provider === 'ollama' && ollamaEndpointChanged) ||
-    isCustomOpenAIInvalid ||
+    isCustomServerInvalid ||
     isClaudeCliInvalid;
 
   useEffect(() => {
     const fetchModelConfig = async () => {
-      // If parent component manages config, skip fetch and just mark as loaded
-      if (skipInitialFetch) {
+      // Skip when the parent manages config; the Ask AI model never comes from this summary fetch
+      if (skipInitialFetch || isAssistant) {
         hasLoadedInitialConfig.current = true;
         return;
       }
@@ -321,23 +314,6 @@ export function ModelSettingsModal({
           if (data.provider === 'claude-cli') {
             setClaudeCliPath(data.claudeCliPath || '');
             loadClaudeCliModels();
-          }
-
-          // Fetch Custom OpenAI config if that's the active provider
-          if (data.provider === 'custom-openai') {
-            try {
-              const customConfig = (await invoke('api_get_custom_openai_config')) as any;
-              if (customConfig) {
-                setCustomOpenAIEndpoint(customConfig.endpoint || '');
-                setCustomOpenAIModel(customConfig.model || '');
-                setCustomOpenAIApiKey(customConfig.apiKey || '');
-                setCustomMaxTokens(customConfig.maxTokens?.toString() || '');
-                setCustomTemperature(customConfig.temperature?.toString() || '');
-                setCustomTopP(customConfig.topP?.toString() || '');
-              }
-            } catch (err) {
-              console.error('Failed to fetch custom OpenAI config:', err);
-            }
           }
         }
       } catch (error) {
@@ -377,33 +353,6 @@ export function ModelSettingsModal({
       hasSyncedFromParent.current = true; // Mark that we've received prop value
     }
   }, [modelConfig.ollamaEndpoint, modelConfig.provider]);
-
-  // Sync custom OpenAI state from modelConfig (context or props)
-  useEffect(() => {
-    if (modelConfig.provider === 'custom-openai') {
-      console.log('Syncing custom OpenAI fields from ConfigContext:', {
-        endpoint: modelConfig.customOpenAIEndpoint,
-        model: modelConfig.customOpenAIModel,
-        hasApiKey: !!modelConfig.customOpenAIApiKey,
-      });
-
-      // Always sync from modelConfig (which comes from context if available)
-      setCustomOpenAIEndpoint(modelConfig.customOpenAIEndpoint || '');
-      setCustomOpenAIModel(modelConfig.customOpenAIModel || '');
-      setCustomOpenAIApiKey(modelConfig.customOpenAIApiKey || '');
-      setCustomMaxTokens(modelConfig.maxTokens?.toString() || '');
-      setCustomTemperature(modelConfig.temperature?.toString() || '');
-      setCustomTopP(modelConfig.topP?.toString() || '');
-    }
-  }, [
-    modelConfig.provider,
-    modelConfig.customOpenAIEndpoint,
-    modelConfig.customOpenAIModel,
-    modelConfig.customOpenAIApiKey,
-    modelConfig.maxTokens,
-    modelConfig.temperature,
-    modelConfig.topP
-  ]);
 
   // Reset hasAutoFetched flag and clear models when switching away from Ollama
   useEffect(() => {
@@ -661,6 +610,8 @@ export function ModelSettingsModal({
 
   // Restore cached model when async model lists become available
   useEffect(() => {
+    // Custom servers pick their model when the server is chosen; a typed model may not be listed
+    if (modelConfig.provider === CUSTOM_PROVIDER) return;
     const providerModels = modelOptions[modelConfig.provider];
     if (!providerModels || providerModels.length === 0) return;
 
@@ -685,28 +636,11 @@ export function ModelSettingsModal({
         return;
       }
     }
-    // For custom-openai provider, save the custom config first
-    if (modelConfig.provider === 'custom-openai') {
-      try {
-        await invoke('api_save_custom_openai_config', {
-          endpoint: customOpenAIEndpoint.trim(),
-          apiKey: customOpenAIApiKey.trim() || null,
-          model: customOpenAIModel.trim(),
-          maxTokens: customMaxTokens ? parseInt(customMaxTokens, 10) : null,
-          temperature: customTemperature ? parseFloat(customTemperature) : null,
-          topP: customTopP ? parseFloat(customTopP) : null,
-        });
-        console.log('Custom OpenAI config saved successfully');
-      } catch (err) {
-        console.error('Failed to save custom OpenAI config:', err);
-        toast.error('Failed to save custom OpenAI configuration');
-        return;
-      }
-    }
-
-    const updatedConfig = {
+    const isCustom = modelConfig.provider === CUSTOM_PROVIDER;
+    const updatedConfig: ModelConfig = {
       ...modelConfig,
-      apiKey: typeof apiKey === 'string' ? apiKey.trim() || null : null,
+      // A custom server's key lives with the server, not with the model setting
+      apiKey: !isCustom && typeof apiKey === 'string' ? apiKey.trim() || null : null,
       ollamaEndpoint: modelConfig.provider === 'ollama'
         ? (ollamaEndpoint.trim() || null)
         : (modelConfig.ollamaEndpoint || null),
@@ -714,55 +648,38 @@ export function ModelSettingsModal({
       claudeCliPath: modelConfig.provider === 'claude-cli'
         ? (claudeCliPath.trim() || null)
         : (modelConfig.claudeCliPath || null),
-      // Include custom OpenAI fields
-      customOpenAIEndpoint: modelConfig.provider === 'custom-openai' ? customOpenAIEndpoint.trim() : null,
-      customOpenAIModel: modelConfig.provider === 'custom-openai' ? customOpenAIModel.trim() : null,
-      customOpenAIApiKey: modelConfig.provider === 'custom-openai' && customOpenAIApiKey.trim() ? customOpenAIApiKey.trim() : null,
-      maxTokens: modelConfig.provider === 'custom-openai' && customMaxTokens ? parseInt(customMaxTokens, 10) : null,
-      temperature: modelConfig.provider === 'custom-openai' && customTemperature ? parseFloat(customTemperature) : null,
-      topP: modelConfig.provider === 'custom-openai' && customTopP ? parseFloat(customTopP) : null,
-      // For custom-openai, use the customOpenAIModel as the model field
-      model: modelConfig.provider === 'custom-openai' ? customOpenAIModel.trim() : modelConfig.model,
+      customProviderId: isCustom ? modelConfig.customProviderId ?? null : null,
+      model: isCustom ? modelConfig.model.trim() : modelConfig.model,
     };
     setModelConfig(updatedConfig);
-    console.log('ModelSettingsModal - handleSave - Updated ModelConfig:', updatedConfig);
 
-    // Persist confirmed model choice to per-provider cache
-    if (updatedConfig.model) {
+    // Remember the summary choice per provider (and per custom server) for quick switching
+    if (!isAssistant && updatedConfig.model) {
       const map = JSON.parse(localStorage.getItem('providerModelMap') || '{}');
       map[updatedConfig.provider] = updatedConfig.model;
+      if (isCustom) map[`${CUSTOM_PROVIDER}:${updatedConfig.customProviderId}`] = updatedConfig.model;
       localStorage.setItem('providerModelMap', JSON.stringify(map));
     }
 
     // Update provider-specific key in context
-    if (updateProviderApiKey && updatedConfig.apiKey && updatedConfig.provider !== 'custom-openai') {
+    if (!isAssistant && updateProviderApiKey && updatedConfig.apiKey) {
       updateProviderApiKey(updatedConfig.provider, updatedConfig.apiKey);
     }
 
     onSave(updatedConfig);
   };
 
-  // Test custom OpenAI connection
-  const testCustomOpenAIConnection = async () => {
-    if (!customOpenAIEndpoint.trim() || !customOpenAIModel.trim()) {
-      toast.error('Please enter endpoint URL and model name first');
-      return;
-    }
+  /** Point the model at a saved server, restoring the model last used with it. */
+  const selectServer = (server: CustomProvider) => {
+    const map = JSON.parse(localStorage.getItem('providerModelMap') || '{}');
+    const cached = map[`${CUSTOM_PROVIDER}:${server.id}`];
+    const model = typeof cached === 'string' && cached ? cached : server.models[0] ?? '';
+    setModelConfig((prev: ModelConfig) => ({ ...prev, provider: CUSTOM_PROVIDER, customProviderId: server.id, model }));
+  };
 
-    setIsTestingConnection(true);
-    try {
-      const result = await invoke<{ status: string; message: string }>('api_test_custom_openai_connection', {
-        endpoint: customOpenAIEndpoint.trim(),
-        apiKey: customOpenAIApiKey.trim() || null,
-        model: customOpenAIModel.trim(),
-      });
-      toast.success(result.message || 'Connection successful!');
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      toast.error(errorMsg);
-    } finally {
-      setIsTestingConnection(false);
-    }
+  const openServerDialog = (server: CustomProvider | null) => {
+    setServerDialogTarget(server);
+    setServerDialogOpen(true);
   };
 
   const handleInputClick = () => {
@@ -875,11 +792,20 @@ export function ModelSettingsModal({
     );
   });
 
+  // The server's models, plus a typed model that is not in its list
+  const customModelOptions = [...new Set([...(selectedServer?.models ?? []), modelConfig.model].filter(Boolean))].map(
+    (id) => ({
+      value: id,
+      label: id,
+      description: selectedServer?.models.includes(id) ? undefined : 'Not in the server list',
+    })
+  );
+
   return (
     <div>
       <div className="space-y-4">
         <div>
-          <Label>Summarization Model</Label>
+          <Label>{isAssistant ? 'Provider and model' : 'Summarization Model'}</Label>
           <div className="flex space-x-2 mt-1">
             <Select
               value={modelConfig.provider}
@@ -934,20 +860,10 @@ export function ModelSettingsModal({
                     });
                 }
 
-                // Load custom OpenAI config when selected
-                if (provider === 'custom-openai') {
-                  invoke<any>('api_get_custom_openai_config').then((config) => {
-                    if (config) {
-                      setCustomOpenAIEndpoint(config.endpoint || '');
-                      setCustomOpenAIModel(config.model || '');
-                      setCustomOpenAIApiKey(config.apiKey || '');
-                      setCustomMaxTokens(config.maxTokens?.toString() || '');
-                      setCustomTemperature(config.temperature?.toString() || '');
-                      setCustomTopP(config.topP?.toString() || '');
-                    }
-                  }).catch((err) => {
-                    console.error('Failed to load custom OpenAI config:', err);
-                  });
+                // A custom server needs a saved server; reuse the current one or the first saved
+                if (provider === CUSTOM_PROVIDER) {
+                  const server = selectedServer ?? customProviders?.[0];
+                  if (server) selectServer(server);
                 }
               }}
             >
@@ -1026,133 +942,78 @@ export function ModelSettingsModal({
           </div>
         </div>
 
-        {/* Custom OpenAI Configuration Section */}
-        {modelConfig.provider === 'custom-openai' && (
-          <div className="space-y-4 border-t pt-4">
-            <div>
-              <Label htmlFor="custom-endpoint">Endpoint URL *</Label>
-              <Input
-                id="custom-endpoint"
-                value={customOpenAIEndpoint}
-                onChange={(e) => setCustomOpenAIEndpoint(e.target.value)}
-                placeholder="http://localhost:8000/v1"
-                className="mt-1"
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                Base URL of the OpenAI-compatible API
-              </p>
-            </div>
-
-            <div>
-              <Label htmlFor="custom-model">Model Name *</Label>
-              <Input
-                id="custom-model"
-                value={customOpenAIModel}
-                onChange={(e) => setCustomOpenAIModel(e.target.value)}
-                placeholder="gpt-4, llama-3-70b, etc."
-                className="mt-1"
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                Model identifier to use for requests
-              </p>
-            </div>
-
-            <div>
-              <Label htmlFor="custom-api-key">API Key (optional)</Label>
-              <Input
-                id="custom-api-key"
-                type="password"
-                value={customOpenAIApiKey}
-                onChange={(e) => setCustomOpenAIApiKey(e.target.value)}
-                placeholder="Leave empty if not required"
-                className="mt-1"
-              />
-            </div>
-
-            {/* Advanced Options (Collapsible) */}
-            <div>
-              <div
-                className="flex items-center justify-between cursor-pointer py-2"
-                onClick={() => setIsCustomOpenAIAdvancedOpen(!isCustomOpenAIAdvancedOpen)}
-              >
-                <Label className="cursor-pointer">Advanced Options</Label>
-                {isCustomOpenAIAdvancedOpen ? (
-                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
-                ) : (
-                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                )}
-              </div>
-
-              {isCustomOpenAIAdvancedOpen && (
-                <div className="space-y-3 pl-2 border-l-2 border-muted mt-2">
-                  <div>
-                    <Label htmlFor="custom-max-tokens">Max Tokens</Label>
-                    <Input
-                      id="custom-max-tokens"
-                      type="number"
-                      value={customMaxTokens}
-                      onChange={(e) => setCustomMaxTokens(e.target.value)}
-                      placeholder="e.g., 4096"
-                      className="mt-1"
+        {modelConfig.provider === CUSTOM_PROVIDER && (
+          <div className="space-y-2 border-t border-af-border pt-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>Server</Label>
+                <div className="flex items-center gap-1.5">
+                  <Select
+                    value={selectedServer?.id ?? ''}
+                    onValueChange={(value) => {
+                      if (value === ADD_SERVER_VALUE) {
+                        openServerDialog(null);
+                        return;
+                      }
+                      const server = customProviders?.find((entry) => entry.id === value);
+                      if (server) selectServer(server);
+                    }}
+                  >
+                    <SelectTrigger aria-label="Custom server">
+                      <SelectValue placeholder={customProviders?.length ? 'Choose a server' : 'No servers yet'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {customProviders?.map((server) => (
+                        <SelectItem key={server.id} value={server.id}>
+                          {server.name}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value={ADD_SERVER_VALUE}>Add server…</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {selectedServer && (
+                    <IconButton
+                      label={`Edit ${selectedServer.name}`}
+                      icon={<Pencil className="size-4" />}
+                      onClick={() => openServerDialog(selectedServer)}
                     />
-                  </div>
-                  <div>
-                    <Label htmlFor="custom-temperature">Temperature (0.0-2.0)</Label>
-                    <Input
-                      id="custom-temperature"
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      max="2"
-                      value={customTemperature}
-                      onChange={(e) => setCustomTemperature(e.target.value)}
-                      placeholder="e.g., 0.7"
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="custom-top-p">Top P (0.0-1.0)</Label>
-                    <Input
-                      id="custom-top-p"
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      max="1"
-                      value={customTopP}
-                      onChange={(e) => setCustomTopP(e.target.value)}
-                      placeholder="e.g., 0.9"
-                      className="mt-1"
-                    />
-                  </div>
+                  )}
                 </div>
-              )}
+              </div>
+              <div className="space-y-1.5">
+                <Label>Model</Label>
+                <Combobox
+                  aria-label="Custom server model"
+                  value={modelConfig.model || null}
+                  onChange={(value) => value && setModelConfig((prev: ModelConfig) => ({ ...prev, model: value }))}
+                  options={customModelOptions}
+                  placeholder={selectedServer ? 'Choose a model' : 'Choose a server first'}
+                  searchPlaceholder="Search or type a model…"
+                  emptyText="No models"
+                  onCreate={(query) => ({ value: query, label: query })}
+                  createLabel={(query) => `Use “${query}”`}
+                  disabled={!selectedServer}
+                />
+              </div>
             </div>
-
-            {/* Test Connection Button */}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={testCustomOpenAIConnection}
-              disabled={isTestingConnection || !customOpenAIEndpoint.trim() || !customOpenAIModel.trim()}
-              className="w-full"
-            >
-              {isTestingConnection ? (
-                <>
-                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                  Testing Connection...
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 className="mr-2 h-4 w-4" />
-                  Test Connection
-                </>
-              )}
-            </Button>
+            {customProviders?.length === 0 && (
+              <p className="text-[12px] text-af-text-3">Add a server to choose one of its models.</p>
+            )}
+            {modelConfig.customProviderId && customProviders && customProviders.length > 0 && !selectedServer && (
+              <p className="text-[12px] text-af-danger">The saved server no longer exists. Choose another one.</p>
+            )}
           </div>
         )}
 
-        {requiresApiKey && (
+        {requiresApiKey && isAssistant && !apiKey?.trim() && (
+          <Alert className="border-af-warning/35 bg-af-warning/10">
+            <AlertDescription className="text-af-text">
+              No API key is saved for this provider yet. Add one by choosing it once as the summary model.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {requiresApiKey && !isAssistant && (
           <div>
             <Label>API Key</Label>
             <div className="relative mt-1">
@@ -1199,7 +1060,7 @@ export function ModelSettingsModal({
         {/* The Anthropic API requires max_tokens, so Claude is the one provider
             where this value always has an effect. Everything else either has its
             own field (Custom Server) or uses its own default. */}
-        {modelConfig.provider === 'claude' && (
+        {modelConfig.provider === 'claude' && !isAssistant && (
           <div>
             <Label htmlFor="summary-max-tokens">Maximum summary length (optional)</Label>
             <Input
@@ -1221,7 +1082,8 @@ export function ModelSettingsModal({
           </div>
         )}
 
-        {modelConfig.provider === 'ollama' && (
+        {/* The Ollama endpoint is shared with summaries, so it is edited there only */}
+        {modelConfig.provider === 'ollama' && !isAssistant && (
           <div>
             <div
               className="flex items-center justify-between cursor-pointer py-2"
@@ -1520,6 +1382,16 @@ export function ModelSettingsModal({
           Save
         </Button>
       </div>
+
+      <CustomServerDialog
+        open={serverDialogOpen}
+        onOpenChange={setServerDialogOpen}
+        provider={serverDialogTarget}
+        onSaved={(saved) => {
+          // A newly added server becomes the choice; edits keep the current one
+          if (!serverDialogTarget) selectServer(saved);
+        }}
+      />
     </div>
   );
 }

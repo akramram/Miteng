@@ -52,6 +52,8 @@ import { extractActionItems } from '@/lib/action-items';
 import { completeSummaryMarkdown } from '@/lib/summary-markdown';
 import { labelForCode } from '@/lib/summary-languages';
 import { readMeetingSummaryLanguage, saveMeetingSummaryLanguage } from '@/lib/summary-language-preferences';
+import { CUSTOM_PROVIDER, providerDisplayName } from '@/lib/custom-providers';
+import { useCustomProviders } from '@/hooks/useCustomProviders';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -277,6 +279,8 @@ function NotesTab({
   };
   const templateName = templates.find((template) => template.id === selectedTemplate)?.name ?? 'Standard';
   const modelLabel = modelConfig?.model ? modelConfig.model : 'No model';
+  const customProviders = useCustomProviders();
+  const providerLabel = modelConfig?.provider ? providerDisplayName(modelConfig, customProviders) : '';
   const languageLabel = language ? labelForCode(language) : 'Auto language';
 
   // ---- Regenerate ------------------------------------------------------------
@@ -367,6 +371,7 @@ function NotesTab({
                 )}
               </h2>
               <p className="mt-0.5 truncate text-[11px] text-af-text-4">
+                {modelConfig?.provider === CUSTOM_PROVIDER ? `${providerLabel} · ` : ''}
                 {modelLabel} · {templateName} · {languageLabel}
               </p>
             </div>
@@ -386,7 +391,7 @@ function NotesTab({
                     <span className="text-[11px] text-af-text-3">Model</span>
                     <div className="flex items-center justify-between gap-2 rounded-lg border border-af-border bg-af-panel-2 px-3 py-2">
                       <span className="min-w-0 truncate text-xs text-af-text">
-                        {modelConfig?.provider ? `${modelConfig.provider} · ` : ''}
+                        {providerLabel ? `${providerLabel} · ` : ''}
                         {modelLabel}
                       </span>
                       <Button variant="ghost" size="xs" onClick={() => setModelOpen(true)}>
