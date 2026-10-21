@@ -79,7 +79,17 @@ struct AudioMixerRingBuffer {
     system_clock: Option<SourceSampleClock>,
     input_blocks: u64,
     continuity: MixerContinuity,
+    /// Newest block timestamp seen from any source: the recording clock as far
+    /// as the mixer knows.
+    newest_timestamp: f64,
 }
+
+/// A block this close to the newest timestamp is current audio, never a stale
+/// queued block.
+const CURRENT_BLOCK_SLACK_SECONDS: f64 = 0.100;
+/// Normal delivery jitter keeps the output behind the newest timestamp; well
+/// past it, a source's backlog was counted into the future.
+const MAX_OUTPUT_LEAD_SECONDS: f64 = 0.100;
 
 #[derive(Default)]
 struct MixerContinuity {
@@ -155,6 +165,7 @@ impl AudioMixerRingBuffer {
             system_clock: None,
             input_blocks: 0,
             continuity: MixerContinuity::default(),
+            newest_timestamp: f64::NEG_INFINITY,
         }
     }
 
@@ -209,8 +220,34 @@ impl AudioMixerRingBuffer {
             && (chunk_start < self.output_samples || missed_window)
         {
             chunk_start = wall_start;
+        } else if current_len == 0 && chunk_start < self.output_samples
+            && timestamp >= self.newest_timestamp - CURRENT_BLOCK_SLACK_SECONDS
+        {
+            // The output already passed this block's position, yet it is as new as
+            // any audio seen: another source's backlog was counted into the future
+            // (see `output_lead_seconds`). Keep the audio at the output edge rather
+            // than discarding every block of this source from now on.
+            chunk_start = self.output_samples;
         }
         Some((start, chunk_start))
+    }
+
+    /// How far the emitted output runs ahead of the newest timestamp, in seconds.
+    ///
+    /// Microphone and Core Audio blocks are stamped when they are delivered, not
+    /// when they were captured. After a stall, a source hands over its backlog at
+    /// once; counted from its re-anchor point, that backlog lands in the future.
+    /// When it is longer than the waiting budget the output follows it ahead of
+    /// the recording clock, and the other source's current blocks all look late.
+    fn output_lead_seconds(&self, timestamp: f64) -> f64 {
+        let Some(origin) = self.timeline_origin else { return 0.0; };
+        origin + self.output_samples as f64 / self.sample_rate - self.newest_timestamp.max(timestamp)
+    }
+
+    /// Output ahead of the recording clock by more than this re-anchors every
+    /// source to its timestamps, restoring their alignment.
+    fn output_ran_ahead(&self, timestamp: f64) -> bool {
+        self.output_lead_seconds(timestamp) > MAX_OUTPUT_LEAD_SECONDS
     }
 
     fn needs_timeline_reset(&self, source: &DeviceType, count: usize, timestamp: f64) -> bool {
@@ -221,6 +258,7 @@ impl AudioMixerRingBuffer {
             DeviceType::Mixed => return false,
         };
         chunk_start.saturating_sub(self.output_samples + pending) > self.max_buffer_size
+            || self.output_ran_ahead(timestamp)
     }
 
     fn add_samples(
@@ -243,10 +281,18 @@ impl AudioMixerRingBuffer {
         };
         let buffered_end = self.output_samples + current_len;
         let mut discontinuity_start = None;
-        if chunk_start.saturating_sub(buffered_end) > self.max_buffer_size {
+        let ran_ahead = self.output_ran_ahead(timestamp);
+        if chunk_start.saturating_sub(buffered_end) > self.max_buffer_size || ran_ahead {
             // The pipeline must persist the old tail before changing origins.
             debug_assert!(self.mic_buffer.is_empty() && self.system_buffer.is_empty());
-            warn!("Audio timeline discontinuity detected; resetting source alignment");
+            if ran_ahead {
+                warn!(
+                    "Audio output ran {:.2}s ahead of the recording clock; re-anchoring sources",
+                    self.output_lead_seconds(timestamp)
+                );
+            } else {
+                warn!("Audio timeline discontinuity detected; resetting source alignment");
+            }
             self.mic_buffer.clear();
             self.system_buffer.clear();
             self.timeline_origin = Some(start);
@@ -263,6 +309,7 @@ impl AudioMixerRingBuffer {
             next_sample: chunk_start.saturating_add(samples.len()),
             last_callback_end_seconds: timestamp,
         });
+        self.newest_timestamp = self.newest_timestamp.max(timestamp);
         let buffer = match device_type {
             DeviceType::Microphone => {
                 self.mic_clock = next_clock;
@@ -2148,5 +2195,45 @@ mod ring_buffer_tests {
         assert!((samples[0] - PEAK_LIMIT).abs() < f32::EPSILON);
         assert!((samples[1] + PEAK_LIMIT / 2.0).abs() < f32::EPSILON);
         assert_eq!(samples[2], 0.0);
+    }
+
+    #[test]
+    fn a_backlog_delivered_at_once_does_not_silence_the_other_source() {
+        // Mic and Core Audio blocks are stamped on delivery. The mic stalls for
+        // 1.2 s and then hands over its backlog at once. The call audio must
+        // survive (it was lost for an hour) and both tracks must line up again.
+        let mut ring = AudioMixerRingBuffer::new(1000, true, true);
+        let mut events: Vec<(f64, DeviceType, usize)> = Vec::new();
+        for block in 0..4000 {
+            let end = (block + 1) as f64 * 0.010;
+            let delivered = if end > 10.0 && end < 11.2 { 11.2 + block as f64 * 1e-6 } else { end };
+            events.push((delivered, DeviceType::Microphone, block));
+        }
+        for block in 0..2000 {
+            events.push(((block + 1) as f64 * 0.020, DeviceType::System, block));
+        }
+        events.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let (mut mic, mut system) = (Vec::new(), Vec::new());
+        for (delivered, source, block) in events {
+            let len = if source == DeviceType::Microphone { 10 } else { 20 };
+            if ring.needs_timeline_reset(&source, len, delivered) {
+                while let Some((m, s)) = ring.extract_remaining() { mic.extend(m); system.extend(s); }
+            }
+            ring.add_samples(source, vec![(block + 1) as f32; len], delivered);
+            while let Some((m, s)) = ring.extract_window() { mic.extend(m); system.extend(s); }
+        }
+        while let Some((m, s)) = ring.extract_remaining() { mic.extend(m); system.extend(s); }
+
+        // From two seconds after the backlog until the final flush.
+        let settled = 13_000..mic.len() - 200;
+        assert!(system[settled.clone()].iter().all(|v| *v != 0.0), "system audio silenced after the mic backlog");
+        assert!(mic[settled.clone()].iter().all(|v| *v != 0.0), "mic audio silenced after its backlog");
+        // Block values encode capture time: mic block k starts at 10k ms, system
+        // block j at 20j ms. Re-anchoring leaves at most the tolerated output
+        // lead plus one mixing window between them.
+        let worst_offset_ms = mic[settled.clone()].iter().zip(&system[settled])
+            .map(|(m, s)| ((*m as f64 - 1.0) * 10.0 - (*s as f64 - 1.0) * 20.0).abs())
+            .fold(0.0, f64::max);
+        assert!(worst_offset_ms <= 150.0, "mic and system stay {worst_offset_ms} ms apart");
     }
 }

@@ -511,7 +511,7 @@ async fn run_retranscription<R: Runtime>(
             let lower = trimmed.to_lowercase();
             let is_hallucination = (lower == "you" || lower == "you." || lower == "thank you." || lower == "thank you" || lower == "thanks." || lower == "bye." || lower == "bye") && rms < 0.02;
             if is_hallucination {
-                warn!("Dropping suspected silence hallucination on segment {}: '{}' (rms={:.5}, conf={:.2})", i + 1, trimmed, rms, conf);
+                warn!("Dropping suspected silence hallucination on segment {}: {} chars (rms={:.5}, conf={:.2})", i + 1, trimmed.chars().count(), rms, conf);
                 continue;
             }
 
