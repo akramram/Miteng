@@ -13,6 +13,7 @@ import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { RecordingLock } from '@/components/RecordingLock';
 
 type ModalName = 'languageSettings' | 'modelSelector' | 'errorAlert' | 'chunkDropWarning';
 
@@ -69,11 +70,13 @@ export function SettingsModals({ modals, messages, onClose }: SettingsModalsProp
             </DialogDescription>
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-            <TranscriptSettings
-              transcriptModelConfig={transcriptModelConfig}
-              setTranscriptModelConfig={setTranscriptModelConfig}
-              onModelSelect={() => onClose('modelSelector')}
-            />
+            <RecordingLock>
+              <TranscriptSettings
+                transcriptModelConfig={transcriptModelConfig}
+                setTranscriptModelConfig={setTranscriptModelConfig}
+                onModelSelect={() => onClose('modelSelector')}
+              />
+            </RecordingLock>
           </div>
           <DialogFooter className="items-center border-t border-af-border px-6 py-4 sm:justify-between">
             <label className="flex cursor-pointer items-center gap-3">

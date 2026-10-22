@@ -24,6 +24,7 @@ import { LocalStackStatus } from '@/components/LocalStackStatus';
 import { AboutSettings } from '@/components/AboutSettings';
 import { LabsSettings } from '@/components/LabsSettings';
 import { AppAudioCard } from '@/components/recording/AppAudioSource';
+import { RecordingLock } from '@/components/RecordingLock';
 
 type SectionId = 'general' | 'recording' | 'transcription' | 'summaries' | 'detection' | 'local' | 'labs' | 'about';
 
@@ -153,22 +154,32 @@ function SettingsInner() {
             {active === 'general' && <PreferenceSettings />}
             {active === 'recording' && (
               <>
-                <RecordingSettings />
-                <AppAudioCard />
+                <RecordingLock>
+                  <RecordingSettings />
+                  <AppAudioCard />
+                </RecordingLock>
                 <ImportCard />
               </>
             )}
             {active === 'transcription' && (
-              <>
+              <RecordingLock>
                 <TranscriptSettings transcriptModelConfig={transcriptModelConfig} setTranscriptModelConfig={setTranscriptModelConfig} />
                 <DiarizationSettings />
                 <OptionalModelDownloads allowUninstall />
-              </>
+              </RecordingLock>
             )}
             {active === 'summaries' && <SummaryModelSettings />}
-            {active === 'detection' && <MeetingDetectionSettings />}
+            {active === 'detection' && (
+              <RecordingLock>
+                <MeetingDetectionSettings />
+              </RecordingLock>
+            )}
             {active === 'local' && <LocalStackStatus />}
-            {active === 'labs' && <LabsSettings />}
+            {active === 'labs' && (
+              <RecordingLock>
+                <LabsSettings />
+              </RecordingLock>
+            )}
             {active === 'about' && <AboutSettings />}
           </div>
         </div>
