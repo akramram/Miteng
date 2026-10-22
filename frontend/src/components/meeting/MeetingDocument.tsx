@@ -54,6 +54,7 @@ import { labelForCode } from '@/lib/summary-languages';
 import { readMeetingSummaryLanguage, saveMeetingSummaryLanguage } from '@/lib/summary-language-preferences';
 import { CUSTOM_PROVIDER, customModelLabel, providerDisplayName } from '@/lib/custom-providers';
 import { useCustomProviders } from '@/hooks/useCustomProviders';
+import { AskModelSwitcher } from '@/components/meeting/AskModelSwitcher';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -118,6 +119,7 @@ export function MeetingDocument(props: MeetingDocumentProps) {
             Ask AI
           </TabsTrigger>
         </TabsList>
+        {tab === 'ask' && <AskModelSwitcher summaryConfig={props.modelConfig} />}
       </div>
       <TabsContent value="notes" className="mt-0 min-h-0 flex-1 data-[state=active]:flex data-[state=inactive]:hidden" forceMount>
         <NotesTab {...props} />
@@ -130,7 +132,7 @@ export function MeetingDocument(props: MeetingDocumentProps) {
           placeholder="Ask about this meeting…"
           emptyTitle="Ask about this meeting"
           emptyHint="Answers use the whole transcript, your notes, the summary, and the action items, with links to the moment."
-          footnote="Uses your configured AI model. Cloud providers receive the parts of this meeting needed to answer."
+          footnote="Cloud providers receive the parts of this meeting needed to answer."
           onSeek={props.onSeek}
         />
       </TabsContent>
