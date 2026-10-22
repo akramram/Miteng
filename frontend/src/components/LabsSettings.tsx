@@ -37,10 +37,10 @@ const GROUPS: Array<{ title: string; features: Feature[] }> = [
       {
         key: 'meetingAutomation',
         icon: Workflow,
-        title: 'Meeting automation',
+        title: 'Start and stop recordings automatically',
         description:
-          'Start recording when meeting detection sees a call using your microphone or camera, and stop and save it when the call ends. Recordings you start yourself are never stopped.',
-        where: 'Turns on meeting detection. A notice says when a call starts or ends a recording.',
+          'Start recording when another app (Teams, Zoom, a browser call…) has been using the microphone for a few seconds, and stop and save it once that app lets go. Separate from meeting detection, which only looks for meeting apps and asks. Recordings you start yourself are never stopped.',
+        where: 'A notice says when an app starts or ends a recording. macOS 14+ and Windows.',
       },
     ],
   },
@@ -231,7 +231,7 @@ export function LabsSettings() {
     try {
       await setLabsFeature(feature.key, value);
       if (feature.key === 'meetingAutomation' && value) {
-        toast.success('Meeting automation is on', { description: 'Meeting detection is on too, so calls can start recordings.' });
+        toast.success('Automatic recording is on', { description: 'An app using the microphone now starts a recording.' });
       }
     } catch (error) {
       toast.error(`Could not ${value ? 'turn on' : 'turn off'} ${feature.title.toLowerCase()}`, {

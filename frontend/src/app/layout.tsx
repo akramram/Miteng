@@ -29,8 +29,8 @@ import { UpdateCheckProvider } from '@/components/UpdateCheckProvider'
 import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcessingProvider'
 import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
 import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
-import { loadLabsPreferences } from '@/lib/labs'
-import { automatedRecording, endAutomatedRecording, markAutomatedStart } from '@/lib/meeting-automation'
+import { useLabs } from '@/hooks/useLabs'
+import { automatedRecording, endAutomatedRecording, markAutomatedStart, type AutomatedCall } from '@/lib/meeting-automation'
 import { getPendingCrashReport, type PendingCrashReport } from '@/services/crashReportService'
 import { WorkspaceProvider } from '@/contexts/WorkspaceContext'
 import { RouteWarmup } from '@/components/RouteWarmup'
@@ -148,6 +148,7 @@ export default function RootLayout({
   // Tray, notification and meeting-detection starts work from any page.
   const startRecordingAnywhere = useRef<() => void>(() => undefined)
   const isMinibar = (pathname ?? '').startsWith('/minibar')
+  const { labs } = useLabs()
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingCompleted, setOnboardingCompleted] = useState(false)
   // Paint a retryable startup screen until native setup status is known.
@@ -300,58 +301,10 @@ export default function RootLayout({
   }, [startupResolved, startupError, pendingCrashReport]);
 
   // Meeting Detection: prompt to start recording when a meeting app is detected.
-  // With Labs meeting automation on, a call that is using the microphone or
-  // camera starts a recording instead, and that recording stops when the call
-  // ends. The compact bar's window never starts or stops recordings.
+  // The compact bar's window never starts or stops recordings.
   useEffect(() => {
     if (!startupResolved || startupError || pendingCrashReport || isMinibar || !recordingNoticeAcknowledged) return
-    const unlisten = listen<{ app: string; process: string; notify: boolean; active_media: boolean }>(
-      'meeting-detected',
-      (event) => {
-        const { app, notify, active_media, process } = event.payload;
-        console.log('[Layout] meeting-detected:', event.payload);
-
-        const startRecording = () => {
-          if (showOnboarding) {
-            toast.error('Please complete setup first', {
-              description: 'Finish onboarding before you can start recording.',
-            });
-            return;
-          }
-          startRecordingAnywhere.current();
-        };
-
-        if (loadLabsPreferences().meetingAutomation && active_media && !showOnboarding) {
-          void invoke<{ is_recording?: boolean }>('get_recording_state').then((state) => {
-            if (state.is_recording) return;
-            markAutomatedStart({ app, process });
-            startRecording();
-          }).catch((error) => console.error('Could not check recording state for meeting automation:', error));
-          return;
-        }
-
-        // OS toast with a Start recording button (Windows native path).
-        if (notify) {
-          invoke('show_simple_notification', {
-            title: `${app} meeting detected`,
-            body: 'Start recording this meeting now?',
-          }).catch(() => {});
-        }
-
-        // In-app prompt with a one-click start action.
-        toast(`${app} meeting detected`, {
-          description: 'Capture mic + system audio in Miteng.',
-          duration: 20000,
-          action: {
-            label: 'Start recording',
-            onClick: startRecording,
-          },
-        });
-      }
-    );
-
-    // OS notification button → same start path as sidebar / in-app toast.
-    const unlistenStart = listen('start-recording-from-notification', () => {
+    const startRecordingChecked = () => {
       if (showOnboarding) {
         toast.error('Please complete setup first', {
           description: 'Finish onboarding before you can start recording.',
@@ -359,28 +312,85 @@ export default function RootLayout({
         return;
       }
       startRecordingAnywhere.current();
+    };
+
+    const unlisten = listen<{ app: string; process: string; notify: boolean }>(
+      'meeting-detected',
+      (event) => {
+        const { app, notify } = event.payload;
+        console.log('[Layout] meeting-detected:', event.payload);
+        void invoke<{ is_recording?: boolean }>('get_recording_state').then((state) => {
+          if (state.is_recording) return;
+
+          // OS toast with a Start recording button (Windows native path).
+          if (notify) {
+            invoke('show_simple_notification', {
+              title: `${app} meeting detected`,
+              body: 'Start recording this meeting now?',
+            }).catch(() => {});
+          }
+
+          // In-app prompt with a one-click start action.
+          toast(`${app} meeting detected`, {
+            description: 'Capture mic + system audio in Miteng.',
+            duration: 20000,
+            action: {
+              label: 'Start recording',
+              onClick: () => startRecordingChecked(),
+            },
+          });
+        }).catch((error) => console.error('Could not check recording state for meeting detection:', error));
+      }
+    );
+
+    // OS notification button → same start path as sidebar / in-app toast.
+    const unlistenStart = listen('start-recording-from-notification', startRecordingChecked);
+
+    return () => {
+      unlisten.then((fn) => fn());
+      unlistenStart.then((fn) => fn());
+    };
+  }, [showOnboarding, startupResolved, startupError, pendingCrashReport, isMinibar, recordingNoticeAcknowledged]);
+
+  // Start and stop recordings automatically (Labs): another app holding the
+  // microphone starts a recording; when it lets go, the recording it started
+  // stops and saves. Independent of meeting detection.
+  const automationOn = labs.meetingAutomation && startupResolved && !startupError && !pendingCrashReport && !isMinibar && recordingNoticeAcknowledged;
+  useEffect(() => {
+    if (!automationOn) return
+    void invoke('set_mic_activity_watch', { enabled: true }).catch((error) => console.error('Could not watch microphone activity:', error));
+
+    const unlistenStarted = listen<AutomatedCall>('mic-activity-started', (event) => {
+      if (showOnboarding) return;
+      const call = { app: event.payload.app, process: event.payload.process };
+      void invoke<{ is_recording?: boolean }>('get_recording_state').then((state) => {
+        if (state.is_recording) return;
+        toast(`${call.app} is using the microphone`, { description: 'Recording automatically.' });
+        markAutomatedStart(call);
+        startRecordingAnywhere.current();
+      }).catch((error) => console.error('Could not check recording state for automatic recording:', error));
     });
 
-    // Only a recording that automation started for this same call is stopped.
-    const unlistenEnd = listen<{ app: string; process: string }>('meeting-ended', (event) => {
+    // Only a recording that automation started for this same app is stopped.
+    const unlistenEnded = listen<AutomatedCall>('mic-activity-ended', (event) => {
       const call = automatedRecording();
-      if (!call || call.process !== event.payload.process || !loadLabsPreferences().meetingAutomation) return;
+      if (!call || call.process !== event.payload.process) return;
       void invoke<{ is_recording?: boolean }>('get_recording_state').then((state) => {
         if (!state.is_recording) {
           endAutomatedRecording();
           return;
         }
-        toast(`${call.app} call ended`, { description: 'Meeting automation is stopping and saving the recording.' });
+        toast(`${call.app} stopped using the microphone`, { description: 'Stopping and saving the recording.' });
         requestRecordingStop((href) => router.push(href));
-      }).catch((error) => console.error('Could not check recording state for meeting automation:', error));
+      }).catch((error) => console.error('Could not check recording state for automatic recording:', error));
     });
 
     return () => {
-      unlisten.then((fn) => fn());
-      unlistenStart.then((fn) => fn());
-      unlistenEnd.then((fn) => fn());
+      void invoke('set_mic_activity_watch', { enabled: false }).catch(() => undefined);
+      unlistenStarted.then((fn) => fn());
+      unlistenEnded.then((fn) => fn());
     };
-  }, [showOnboarding, startupResolved, startupError, pendingCrashReport, isMinibar, router, recordingNoticeAcknowledged]);
+  }, [automationOn, showOnboarding, router]);
 
   // Handle file drop for audio import
   const handleFileDrop = useCallback((paths: string[]) => {

@@ -1,11 +1,11 @@
 /**
- * Labs meeting automation. When meeting detection sees a call using the
- * microphone or camera, a recording starts; when that call ends, the
- * recording it started stops and saves. Recordings the user started are
- * never stopped by it.
+ * Labs "Start and stop recordings automatically". When another app has held
+ * the microphone for a few seconds, a recording starts; when that app lets go,
+ * the recording it started stops and saves. Recordings the user started are
+ * never stopped by it. Independent of meeting detection, which only prompts.
  *
  * The recorder owns the start and stop sequences, so the hand-off between the
- * detection events (in the root layout) and the recorder goes through
+ * microphone events (in the root layout) and the recorder goes through
  * sessionStorage, which survives the page change to the recorder.
  */
 
@@ -17,9 +17,9 @@ export const AUTOMATION_CHANGED_EVENT = 'meetily-automation-changed';
 const PENDING_TTL_MS = 60_000;
 
 export interface AutomatedCall {
-  /** Friendly name, e.g. "Zoom". */
+  /** Friendly name, e.g. "Microsoft Teams". */
   app: string;
-  /** Process the detector matched, e.g. "Zoom.exe". */
+  /** Key of the app holding the microphone, matched against the end event. */
   process: string;
 }
 
@@ -54,7 +54,7 @@ function parse(value: string | null): AutomatedCall | null {
   return null;
 }
 
-/** Called right before the recorder is asked to start for a detected call. */
+/** Called right before the recorder is asked to start for an app using the microphone. */
 export function markAutomatedStart(call: AutomatedCall) {
   writeKey(PENDING_KEY, JSON.stringify({ ...call, at: Date.now() }));
 }

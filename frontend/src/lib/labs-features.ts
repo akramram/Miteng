@@ -35,15 +35,6 @@ export async function syncLabsFromBackend(): Promise<LabsPreferences> {
  */
 export async function setLabsFeature(feature: LabsFeature, value: boolean): Promise<LabsPreferences> {
   switch (feature) {
-    case 'meetingAutomation':
-      // Automation acts on meeting detection's events, so it needs detection on.
-      if (value) {
-        const detection = await invoke<Record<string, unknown>>('get_meeting_detection_settings');
-        if (!detection.enabled) {
-          await invoke('set_meeting_detection_settings', { settings: { ...detection, enabled: true } });
-        }
-      }
-      break;
     case 'whisperSilenceGuard':
       await invoke('set_whisper_strict_silence', { enabled: value });
       break;

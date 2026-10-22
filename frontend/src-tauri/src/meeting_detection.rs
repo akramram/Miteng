@@ -136,14 +136,8 @@ struct MeetingDetectedPayload {
     active_media: bool,
 }
 
-#[derive(Clone, Serialize)]
-struct MeetingEndedPayload {
-    app: String,
-    process: String,
-}
-
 /// True for our own process — never treat Miteng as a "meeting app".
-fn is_self_process(name: &str) -> bool {
+pub(crate) fn is_self_process(name: &str) -> bool {
     let n = name.to_lowercase();
     n.contains("miteng") || n.contains("meetily")
 }
@@ -176,7 +170,7 @@ fn scan_for_meeting_app(settings: &MeetingDetectionSettings) -> Option<(String, 
     };
 
     #[cfg(windows)]
-    let media_in_use: std::collections::HashSet<String> = windows_media_in_use_exes()
+    let media_in_use: std::collections::HashSet<String> = windows_media_in_use_exes(&["microphone", "webcam"])
         .into_iter()
         .filter(|e| !is_self_process(e))
         .collect();
@@ -242,17 +236,17 @@ fn scan_for_meeting_app(settings: &MeetingDetectionSettings) -> Option<(String, 
     None
 }
 
-/// Windows: executables currently holding microphone or webcam via
-/// CapabilityAccessManager NonPackaged consent-store entries
+/// Windows: executables currently holding the given capabilities (`microphone`,
+/// `webcam`) via CapabilityAccessManager NonPackaged consent-store entries
 /// (LastUsedTimeStart > LastUsedTimeStop ⇒ in use).
 #[cfg(windows)]
-fn windows_media_in_use_exes() -> std::collections::HashSet<String> {
+pub(crate) fn windows_media_in_use_exes(capabilities: &[&str]) -> std::collections::HashSet<String> {
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
 
     let mut out = std::collections::HashSet::new();
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    for cap in ["microphone", "webcam"] {
+    for cap in capabilities {
         for suffix in ["NonPackaged", ""] {
             let path = format!(
                 "Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\{cap}\\{suffix}"
@@ -451,10 +445,10 @@ fn start_monitor<R: Runtime>(app: &AppHandle<R>) {
                     }
                 }
                 None => {
-                    if let Some((app_name, process, _)) = &alerted {
+                    // Prompt again for the next meeting once this one has been gone a while.
+                    if alerted.is_some() {
                         let since = missing_since.get_or_insert_with(std::time::Instant::now);
                         if since.elapsed() >= std::time::Duration::from_secs(45) {
-                            let _ = app.emit("meeting-ended", MeetingEndedPayload { app: app_name.clone(), process: process.clone() });
                             alerted = None;
                             missing_since = None;
                         }

@@ -41,21 +41,17 @@ export function MeetingDetectionSettings() {
     setMd(next);
     try {
       await invoke('set_meeting_detection_settings', { settings: next });
-      // Automation acts on detection's events; without detection it is off too.
-      if (!next.enabled && labs.meetingAutomation) await setLabsFeature('meetingAutomation', false);
     } catch (e) {
       console.error('Failed to save meeting detection settings:', e);
     }
   };
 
-  // Labs: turning automation on also turns detection on.
   const setAutomation = async (value: boolean) => {
     setAutomationBusy(true);
     try {
       await setLabsFeature('meetingAutomation', value);
-      if (value && md && !md.enabled) setMd({ ...md, enabled: true });
     } catch (error) {
-      toast.error('Could not change meeting automation', { description: error instanceof Error ? error.message : String(error) });
+      toast.error('Could not change automatic recording', { description: error instanceof Error ? error.message : String(error) });
     } finally {
       setAutomationBusy(false);
     }
@@ -143,8 +139,8 @@ export function MeetingDetectionSettings() {
             <Badge variant="accent" size="xs">Labs</Badge>
           </h3>
           <p className="mt-0.5 text-[13px] leading-relaxed text-af-text-3">
-            Instead of prompting, record a detected call once it uses your microphone or camera, and stop and save when it
-            ends. Recordings you start yourself are never stopped.
+            Works on its own, without meeting detection: record when another app has been using your microphone for a few
+            seconds, and stop and save once it lets go. Recordings you start yourself are never stopped.
           </p>
         </div>
         <Switch

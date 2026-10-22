@@ -59,6 +59,7 @@ pub mod logging;
 pub mod openrouter;
 pub mod live_assistant;
 pub mod meeting_detection;
+pub mod mic_activity;
 pub mod minibar;
 pub mod parakeet_engine;
 pub mod paths;
@@ -812,6 +813,7 @@ pub fn run() {
             meeting_detection::set_meeting_detection_settings,
             meeting_detection::start_meeting_detection,
             meeting_detection::stop_meeting_detection,
+            mic_activity::set_mic_activity_watch,
             diarization::diarization_models_available,
             diarization::diarization_model_directory,
             diarization::diarization_download_size,
