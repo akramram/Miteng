@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import { toast } from 'sonner';
-import { ChevronDown, CloudDownload, Eye, EyeOff, Pencil, Plus, Server, Trash2, X } from 'lucide-react';
+import { ChevronDown, CloudDownload, Eye, EyeOff, Pencil, Plus, Server, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -72,7 +72,9 @@ export function CustomServers() {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[13px] font-medium text-af-text">{provider.name}</p>
                 <p className="truncate text-[12px] text-af-text-3">
-                  {endpointHost(provider.endpoint)} · {provider.models.length} {provider.models.length === 1 ? 'model' : 'models'}
+                  {endpointHost(provider.endpoint)} · {provider.models.length}
+                  {provider.fetchedModels.length > provider.models.length && ` of ${provider.fetchedModels.length}`}{' '}
+                  {provider.models.length === 1 && provider.fetchedModels.length <= 1 ? 'model' : 'models'}
                 </p>
               </div>
               <IconButton label={`Edit ${provider.name}`} icon={<Pencil className="size-4" />} onClick={() => openForm(provider)} />
@@ -129,16 +131,17 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
   const [endpoint, setEndpoint] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
+  /** Checked models: the only ones offered when picking a model. */
   const [models, setModels] = useState<CustomModel[]>([]);
+  /** Every model the server listed or that was typed in, checked or not. */
+  const [known, setKnown] = useState<CustomModel[]>([]);
   const [modelDraft, setModelDraft] = useState('');
   const [modelNameDraft, setModelNameDraft] = useState('');
   const [maxTokens, setMaxTokens] = useState('');
   const [temperature, setTemperature] = useState('');
   const [topP, setTopP] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [fetched, setFetched] = useState<CustomModel[] | null>(null);
-  const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [fetchFilter, setFetchFilter] = useState('');
+  const [modelFilter, setModelFilter] = useState('');
   const [fetching, setFetching] = useState(false);
   const [testModel, setTestModel] = useState('');
   const [testing, setTesting] = useState(false);
@@ -152,39 +155,23 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
     setApiKey(provider?.apiKey ?? '');
     setShowApiKey(false);
     setModels(provider?.models ?? []);
+    setKnown(provider?.fetchedModels ?? []);
     setModelDraft('');
     setModelNameDraft('');
     setMaxTokens(provider?.maxTokens?.toString() ?? '');
     setTemperature(provider?.temperature?.toString() ?? '');
     setTopP(provider?.topP?.toString() ?? '');
     setAdvancedOpen(provider?.maxTokens != null || provider?.temperature != null || provider?.topP != null);
-    setFetched(null);
-    setPicked(new Set());
-    setFetchFilter('');
+    setModelFilter('');
     setTestModel(provider?.models[0]?.id ?? '');
   }, [open, provider]);
 
-  const addModels = (added: CustomModel[]) => {
-    const fresh = added
-      .map((model) => ({ id: model.id.trim(), name: model.name?.trim() || null }))
-      .filter((model) => model.id);
-    setModels((current) => {
-      const next = [...current];
-      for (const model of fresh) {
-        if (!next.some((entry) => entry.id === model.id)) next.push(model);
-      }
-      return next;
-    });
-    if (!testModel && fresh[0]) setTestModel(fresh[0].id);
-  };
-
-  const removeModel = (id: string) => {
-    setModels((current) => current.filter((entry) => entry.id !== id));
-    if (testModel === id) setTestModel('');
-  };
-
-  const addDraft = () => {
-    addModels([{ id: modelDraft, name: modelNameDraft }]);
+  const addModel = () => {
+    const model = { id: modelDraft.trim(), name: modelNameDraft.trim() || null };
+    if (!model.id) return;
+    setKnown((current) => [...current.filter((entry) => entry.id !== model.id), model]);
+    setModels((current) => [...current.filter((entry) => entry.id !== model.id), model]);
+    if (!testModel) setTestModel(model.id);
     setModelDraft('');
     setModelNameDraft('');
   };
@@ -192,17 +179,17 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
   const onDraftKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
-    addDraft();
+    addModel();
   };
 
   const fetchModels = async () => {
     setFetching(true);
     try {
       const available = await fetchCustomProviderModels(endpoint.trim(), apiKey.trim() || null);
-      setFetched(available);
-      setPicked(new Set());
-      setFetchFilter('');
+      setKnown(available);
+      setModelFilter('');
       if (available.length === 0) toast.info('The server listed no models. Add model names by hand.');
+      else toast.success(`${available.length} ${available.length === 1 ? 'model' : 'models'} found. Check the ones to use.`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
     } finally {
@@ -210,28 +197,31 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
     }
   };
 
-  const visibleFetched = useMemo(() => {
-    const needle = fetchFilter.trim().toLowerCase();
-    return (fetched ?? []).filter(
-      (model) =>
-        !models.some((entry) => entry.id === model.id) &&
-        (!needle || model.id.toLowerCase().includes(needle) || model.name?.toLowerCase().includes(needle))
+  // Checked models the server no longer lists stay visible so they can be unchecked.
+  const allModels = useMemo(
+    () => [...known, ...models.filter((model) => !known.some((entry) => entry.id === model.id))],
+    [known, models]
+  );
+
+  const visibleModels = useMemo(() => {
+    const needle = modelFilter.trim().toLowerCase();
+    if (!needle) return allModels;
+    return allModels.filter(
+      (model) => model.id.toLowerCase().includes(needle) || model.name?.toLowerCase().includes(needle)
     );
-  }, [fetched, fetchFilter, models]);
+  }, [allModels, modelFilter]);
 
-  const togglePicked = (id: string, checked: boolean) => {
-    setPicked((current) => {
-      const next = new Set(current);
-      if (checked) next.add(id);
-      else next.delete(id);
-      return next;
-    });
+  const checkedIds = useMemo(() => new Set(models.map((model) => model.id)), [models]);
+
+  /** Checks or unchecks `changed`, keeping the checked list in the order of the full list. */
+  const setChecked = (changed: CustomModel[], checked: boolean) => {
+    const ids = new Set(changed.map((model) => model.id));
+    const next = allModels.filter((model) => (ids.has(model.id) ? checked : checkedIds.has(model.id)));
+    setModels(next);
+    if (!next.some((model) => model.id === testModel)) setTestModel(next[0]?.id ?? '');
   };
 
-  const addPicked = () => {
-    addModels(visibleFetched.filter((model) => picked.has(model.id)));
-    setPicked(new Set());
-  };
+  const visibleChecked = visibleModels.filter((model) => checkedIds.has(model.id)).length;
 
   const testConnection = async () => {
     setTesting(true);
@@ -254,6 +244,7 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
         endpoint: endpoint.trim(),
         apiKey: apiKey.trim() || null,
         models,
+        fetchedModels: known,
         maxTokens: maxTokens.trim() ? Number(maxTokens) : null,
         temperature: temperature.trim() ? Number(temperature) : null,
         topP: topP.trim() ? Number(topP) : null,
@@ -328,35 +319,60 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
 
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <Label htmlFor="custom-server-model">Models</Label>
+              <Label htmlFor="custom-server-model">
+                Models
+                {allModels.length > 0 && (
+                  <span className="ml-1.5 font-normal text-af-text-3">
+                    {models.length} of {allModels.length} checked
+                  </span>
+                )}
+              </Label>
               <Button variant="ghost" size="xs" onClick={fetchModels} loading={fetching} disabled={!canReachServer}>
                 {!fetching && <CloudDownload />}
                 Fetch models
               </Button>
             </div>
-            {models.length > 0 ? (
-              <ul className="flex flex-wrap gap-1.5" aria-label="Models">
-                {models.map((model) => (
-                  <li
-                    key={model.id}
-                    title={model.id}
-                    className="flex max-w-full items-center gap-1 rounded-full border border-af-border bg-af-panel-2 py-0.5 pl-2.5 pr-1 text-[12px] text-af-text"
+            {allModels.length > 0 ? (
+              <div className="space-y-2 rounded-xl border border-af-border bg-af-panel-2 p-3">
+                <div className="flex items-center gap-2">
+                  {allModels.length > 8 && (
+                    <Input
+                      value={modelFilter}
+                      onChange={(event) => setModelFilter(event.target.value)}
+                      placeholder="Filter models…"
+                      aria-label="Filter models"
+                      className="h-8"
+                    />
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    className="ml-auto shrink-0"
+                    onClick={() => setChecked(visibleModels, visibleChecked < visibleModels.length)}
+                    disabled={visibleModels.length === 0}
                   >
-                    <span className="truncate">{model.name || model.id}</span>
-                    {model.name && <span className="truncate text-af-text-3">{model.id}</span>}
-                    <button
-                      type="button"
-                      aria-label={`Remove ${model.name || model.id}`}
-                      onClick={() => removeModel(model.id)}
-                      className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-af-text-3 hover:bg-af-hover hover:text-af-text"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
+                    {visibleChecked < visibleModels.length ? 'Check all' : 'Uncheck all'}
+                  </Button>
+                </div>
+                <ul className="max-h-56 space-y-0.5 overflow-y-auto" aria-label="Models">
+                  {visibleModels.map((model) => (
+                    <li key={model.id}>
+                      <label className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-[13px] text-af-text hover:bg-af-hover">
+                        <Checkbox
+                          checked={checkedIds.has(model.id)}
+                          onCheckedChange={(checked) => setChecked([model], checked === true)}
+                        />
+                        <span className="min-w-0 flex-1 truncate">{model.name || model.id}</span>
+                        {model.name && <span className="max-w-[45%] shrink-0 truncate text-[11px] text-af-text-3">{model.id}</span>}
+                      </label>
+                    </li>
+                  ))}
+                  {visibleModels.length === 0 && <li className="px-1.5 py-1 text-[12px] text-af-text-3">No model matches.</li>}
+                </ul>
+                <p className="text-[11px] text-af-text-3">Only checked models appear when you pick a model elsewhere.</p>
+              </div>
             ) : (
-              <p className="text-[12px] text-af-text-3">Add at least one model, by name or from the server.</p>
+              <p className="text-[12px] text-af-text-3">Fetch the server's models, or add one by name.</p>
             )}
             <div className="flex gap-2">
               <Input
@@ -373,55 +389,10 @@ export function CustomServerDialog({ open, onOpenChange, provider, onSaved }: Cu
                 placeholder="Display name (optional)"
                 aria-label="Model display name"
               />
-              <Button variant="secondary" onClick={addDraft} disabled={!modelDraft.trim()}>
+              <Button variant="secondary" onClick={addModel} disabled={!modelDraft.trim()}>
                 Add
               </Button>
             </div>
-
-            {fetched && fetched.length > 0 && (
-              <div className="space-y-2 rounded-xl border border-af-border bg-af-panel-2 p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-[12px] font-medium text-af-text-2">
-                    {fetched.length} {fetched.length === 1 ? 'model' : 'models'} on the server. Pick the ones to keep.
-                  </p>
-                  <Button variant="ghost" size="xs" onClick={() => setFetched(null)}>
-                    Close
-                  </Button>
-                </div>
-                {fetched.length > 8 && (
-                  <Input
-                    value={fetchFilter}
-                    onChange={(event) => setFetchFilter(event.target.value)}
-                    placeholder="Filter models…"
-                    className="h-8"
-                  />
-                )}
-                <ul className="max-h-48 space-y-0.5 overflow-y-auto">
-                  {visibleFetched.map((model) => (
-                    <li key={model.id}>
-                      <label className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-[13px] text-af-text hover:bg-af-hover">
-                        <Checkbox checked={picked.has(model.id)} onCheckedChange={(checked) => togglePicked(model.id, checked === true)} />
-                        <span className="min-w-0 flex-1 truncate">{model.name || model.id}</span>
-                        {model.name && <span className="max-w-[45%] shrink-0 truncate text-[11px] text-af-text-3">{model.id}</span>}
-                      </label>
-                    </li>
-                  ))}
-                  {visibleFetched.length === 0 && (
-                    <li className="px-1.5 py-1 text-[12px] text-af-text-3">
-                      {fetchFilter.trim() ? 'No model matches.' : 'All of these are already added.'}
-                    </li>
-                  )}
-                </ul>
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" onClick={addPicked} disabled={picked.size === 0}>
-                    Add {picked.size > 0 ? picked.size : ''} selected
-                  </Button>
-                  <Button size="sm" variant="secondary" onClick={() => addModels(visibleFetched)} disabled={visibleFetched.length === 0}>
-                    Add all{visibleFetched.length > 0 ? ` (${visibleFetched.length})` : ''}
-                  </Button>
-                </div>
-              </div>
-            )}
           </div>
 
           <div>

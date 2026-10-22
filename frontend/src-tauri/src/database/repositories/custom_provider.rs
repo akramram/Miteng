@@ -53,7 +53,10 @@ pub struct CustomProvider {
     pub name: String,
     pub endpoint: String,
     pub api_key: Option<String>,
+    /// The checked models: the only ones offered outside the server editor.
     pub models: Vec<CustomModel>,
+    /// Everything the server listed on its last fetch, checked or not.
+    pub fetched_models: Vec<CustomModel>,
     pub max_tokens: Option<i32>,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
@@ -70,6 +73,8 @@ pub struct CustomProviderInput {
     pub api_key: Option<String>,
     #[serde(default)]
     pub models: Vec<CustomModel>,
+    #[serde(default)]
+    pub fetched_models: Vec<CustomModel>,
     #[serde(default)]
     pub max_tokens: Option<i32>,
     #[serde(default)]
@@ -112,6 +117,7 @@ struct CustomProviderRow {
     endpoint: String,
     api_key: Option<String>,
     models: String,
+    fetched_models: String,
     max_tokens: Option<i64>,
     temperature: Option<f64>,
     top_p: Option<f64>,
@@ -125,6 +131,7 @@ impl From<CustomProviderRow> for CustomProvider {
             endpoint: row.endpoint,
             api_key: row.api_key,
             models: serde_json::from_str(&row.models).unwrap_or_default(),
+            fetched_models: serde_json::from_str(&row.fetched_models).unwrap_or_default(),
             max_tokens: row.max_tokens.map(|tokens| tokens as i32),
             temperature: row.temperature.map(|value| value as f32),
             top_p: row.top_p.map(|value| value as f32),
@@ -132,8 +139,8 @@ impl From<CustomProviderRow> for CustomProvider {
     }
 }
 
-const SELECT_COLUMNS: &str =
-    "SELECT id, name, endpoint, api_key, models, max_tokens, temperature, top_p FROM custom_providers";
+const SELECT_COLUMNS: &str = "SELECT id, name, endpoint, api_key, models, fetched_models, max_tokens, \
+     temperature, top_p FROM custom_providers";
 
 /// Validates an endpoint as an absolute http(s) URL and returns it trimmed.
 pub fn normalize_endpoint(endpoint: &str) -> Result<String, String> {
@@ -157,12 +164,7 @@ fn validate(input: CustomProviderInput) -> Result<CustomProviderInput, CustomPro
     }
     let endpoint = normalize_endpoint(&input.endpoint).map_err(CustomProviderError::Invalid)?;
 
-    let mut models: Vec<CustomModel> = Vec::with_capacity(input.models.len());
-    for model in input.models.iter().filter_map(CustomModel::normalized) {
-        if !models.iter().any(|existing| existing.id == model.id) {
-            models.push(model);
-        }
-    }
+    let models = unique_models(&input.models);
     if models.is_empty() {
         return Err(invalid("Add at least one model"));
     }
@@ -186,10 +188,22 @@ fn validate(input: CustomProviderInput) -> Result<CustomProviderInput, CustomPro
             .map(|key| key.trim().to_string())
             .filter(|key| !key.is_empty()),
         models,
+        fetched_models: unique_models(&input.fetched_models),
         max_tokens: input.max_tokens,
         temperature: input.temperature,
         top_p: input.top_p,
     })
+}
+
+/// Normalized, first occurrence of each id kept.
+fn unique_models(models: &[CustomModel]) -> Vec<CustomModel> {
+    let mut unique: Vec<CustomModel> = Vec::with_capacity(models.len());
+    for model in models.iter().filter_map(CustomModel::normalized) {
+        if !unique.iter().any(|existing| existing.id == model.id) {
+            unique.push(model);
+        }
+    }
+    unique
 }
 
 pub struct CustomProviderRepository;
@@ -230,20 +244,26 @@ impl CustomProviderRepository {
             )));
         }
 
-        let models = serde_json::to_string(&input.models)
-            .map_err(|error| invalid(format!("Could not store the model list: {error}")))?;
+        let to_json = |models: &[CustomModel]| {
+            serde_json::to_string(models)
+                .map_err(|error| invalid(format!("Could not store the model list: {error}")))
+        };
+        let models = to_json(&input.models)?;
+        let fetched_models = to_json(&input.fetched_models)?;
         let now = chrono::Utc::now().to_rfc3339();
 
         let id = match input.id {
             Some(id) => {
                 let updated = sqlx::query(
                     "UPDATE custom_providers SET name = ?, endpoint = ?, api_key = ?, models = ?, \
-                     max_tokens = ?, temperature = ?, top_p = ?, updated_at = ? WHERE id = ?",
+                     fetched_models = ?, max_tokens = ?, temperature = ?, top_p = ?, updated_at = ? \
+                     WHERE id = ?",
                 )
                 .bind(&input.name)
                 .bind(&input.endpoint)
                 .bind(&input.api_key)
                 .bind(&models)
+                .bind(&fetched_models)
                 .bind(input.max_tokens)
                 .bind(input.temperature)
                 .bind(input.top_p)
@@ -259,14 +279,16 @@ impl CustomProviderRepository {
             None => {
                 let id = format!("custom-{}", uuid::Uuid::new_v4().simple());
                 sqlx::query(
-                    "INSERT INTO custom_providers (id, name, endpoint, api_key, models, max_tokens, \
-                     temperature, top_p, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO custom_providers (id, name, endpoint, api_key, models, fetched_models, \
+                     max_tokens, temperature, top_p, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(&id)
                 .bind(&input.name)
                 .bind(&input.endpoint)
                 .bind(&input.api_key)
                 .bind(&models)
+                .bind(&fetched_models)
                 .bind(input.max_tokens)
                 .bind(input.temperature)
                 .bind(input.top_p)
@@ -464,11 +486,14 @@ mod tests {
         let mut lab = input("Lab box", &[" a ", "a", "b", ""]);
         lab.models.push(model(" c ", Some(" Model C ")));
         lab.models.push(model("d", Some("d")));
+        lab.fetched_models = vec![model("a", None), model("x", Some("Model X")), model(" x ", None)];
         let created = CustomProviderRepository::save(&pool, lab).await.unwrap();
         assert_eq!(
             created.models,
             vec![model("a", None), model("b", None), model("c", Some("Model C")), model("d", None)]
         );
+        // The whole fetched list is kept, unchecked models included.
+        assert_eq!(created.fetched_models, vec![model("a", None), model("x", Some("Model X"))]);
         assert_eq!(created.api_key, None);
 
         let duplicate = CustomProviderRepository::save(&pool, input("LAB BOX", &["c"])).await;

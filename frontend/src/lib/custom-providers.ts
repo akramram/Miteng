@@ -20,7 +20,10 @@ export interface CustomProvider {
   name: string;
   endpoint: string;
   apiKey: string | null;
+  /** Checked models: the only ones offered when picking a model. */
   models: CustomModel[];
+  /** Everything the server listed on the last fetch, checked or not. */
+  fetchedModels: CustomModel[];
   maxTokens: number | null;
   temperature: number | null;
   topP: number | null;

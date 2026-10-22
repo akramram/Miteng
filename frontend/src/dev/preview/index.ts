@@ -90,6 +90,13 @@ const state = {
         { id: 'openai/gpt-4o-mini', name: 'OpenAI: GPT-4o-mini' },
         { id: 'meta-llama/llama-3.1-70b-instruct', name: 'Meta: Llama 3.1 70B Instruct' },
       ],
+      fetchedModels: [
+        { id: 'anthropic/claude-sonnet-4', name: 'Anthropic: Claude Sonnet 4' },
+        { id: 'openai/gpt-4o-mini', name: 'OpenAI: GPT-4o-mini' },
+        { id: 'meta-llama/llama-3.1-70b-instruct', name: 'Meta: Llama 3.1 70B Instruct' },
+        { id: 'google/gemini-2.5-flash', name: 'Google: Gemini 2.5 Flash' },
+        { id: 'mistralai/mistral-large', name: 'Mistral Large' },
+      ],
       maxTokens: null,
       temperature: null,
       topP: null,
@@ -100,6 +107,7 @@ const state = {
       endpoint: 'http://10.0.0.20:8000/v1',
       apiKey: null,
       models: [{ id: 'qwen2.5-32b-instruct' }],
+      fetchedModels: [],
       maxTokens: 4096,
       temperature: 0.3,
       topP: null,
@@ -123,6 +131,7 @@ interface PreviewCustomProvider {
   endpoint: string;
   apiKey: string | null;
   models: CustomModel[];
+  fetchedModels: CustomModel[];
   maxTokens: number | null;
   temperature: number | null;
   topP: number | null;
@@ -138,12 +147,16 @@ function validCustomProvider(input: Args): PreviewCustomProvider {
   if (clash) throw new Error(`A server named ${clash.name} already exists`);
   const endpoint = String(input.endpoint ?? '').trim();
   if (!/^https?:\/\/\S+$/i.test(endpoint)) throw new Error('Endpoint must be an http:// or https:// URL');
-  const models: CustomModel[] = [];
-  for (const model of (input.models ?? []) as CustomModel[]) {
-    const id = model.id.trim();
-    const name = model.name?.trim();
-    if (id && !models.some((entry) => entry.id === id)) models.push(name && name !== id ? { id, name } : { id });
-  }
+  const unique = (list: CustomModel[]) => {
+    const out: CustomModel[] = [];
+    for (const model of list) {
+      const id = model.id.trim();
+      const name = model.name?.trim();
+      if (id && !out.some((entry) => entry.id === id)) out.push(name && name !== id ? { id, name } : { id });
+    }
+    return out;
+  };
+  const models = unique((input.models ?? []) as CustomModel[]);
   if (models.length === 0) throw new Error('Add at least one model');
   if (input.maxTokens != null && input.maxTokens < 1) throw new Error('Max tokens must be at least 1');
   if (input.temperature != null && (input.temperature < 0 || input.temperature > 2)) throw new Error('Temperature must be between 0 and 2');
@@ -154,6 +167,7 @@ function validCustomProvider(input: Args): PreviewCustomProvider {
     endpoint,
     apiKey: String(input.apiKey ?? '').trim() || null,
     models,
+    fetchedModels: unique((input.fetchedModels ?? []) as CustomModel[]),
     maxTokens: input.maxTokens ?? null,
     temperature: input.temperature ?? null,
     topP: input.topP ?? null,
@@ -476,6 +490,8 @@ function handle(cmd: string, args: Args): unknown {
     case 'set_meeting_detection_settings':
       state.meetingDetection = { ...state.meetingDetection, ...args.settings };
       return null;
+    case 'set_mic_activity_watch':
+      return null;
     case 'is_recording':
       return false;
     case 'get_recording_state':
@@ -592,13 +608,13 @@ function handle(cmd: string, args: Args): unknown {
     case 'api_list_custom_providers':
       return [...state.customProviders]
         .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
-        .map((entry) => ({ ...entry, models: [...entry.models] }));
+        .map((entry) => ({ ...entry, models: [...entry.models], fetchedModels: [...entry.fetchedModels] }));
     case 'api_save_custom_provider': {
       const saved = validCustomProvider(args.provider ?? {});
       const index = state.customProviders.findIndex((entry) => entry.id === saved.id);
       if (index >= 0) state.customProviders[index] = saved;
       else state.customProviders.push(saved);
-      return { ...saved, models: [...saved.models] };
+      return { ...saved, models: [...saved.models], fetchedModels: [...saved.fetchedModels] };
     }
     case 'api_delete_custom_provider': {
       const server = state.customProviders.find((entry) => entry.id === args.id);
