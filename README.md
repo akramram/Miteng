@@ -8,7 +8,7 @@ Built with Tauri v2 (Rust) and Next.js; the app lives in `frontend/`.
 
 Compared with Meetily, Miteng adds:
 
-- **Transcription language switcher.** Pick the spoken language (Indonesian, English, Auto, and more) right beside the mic toggle on the record card, also while recording. Auto-translate to English switches to a Whisper model that can actually translate (large-v3-turbo cannot).
+- **Transcription language switcher.** Pick the spoken language (Indonesian, English, Auto, and more) right beside the mic toggle on the record card, also while recording. Pin the languages you use; they appear as one-click chips and at the top of the list. Auto-translate to English switches to a Whisper model that can actually translate (large-v3-turbo cannot).
 - **Linked meetings (Part 1 → 2 → 3).** Mark a meeting as the continuation of an earlier one, before or while recording or afterwards from the meeting page. Use it for a meeting split by a break or carried over to another day. Parts get "Part N of M" navigation and badges in the meeting list. When a later part is summarized, the earlier part's summary is passed as context.
 - **Multiple custom AI servers.** Save any number of OpenAI-compatible servers (vLLM, LM Studio, LiteLLM, OpenRouter, 9router…), each with its own endpoint, API key and model list. Fetch the server's full model list from `/models` with display names, then check the ones to use; only checked models appear when picking a model. Add models by hand and test the connection.
 - **Separate model for Ask AI.** Ask AI (meeting, contact and live) can use a different provider or model than summaries, or follow the summary model. Switch it right from the Ask AI tab on a meeting.
