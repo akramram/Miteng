@@ -36,6 +36,12 @@ use super::recording_state::AudioError;
 /// the old tap stops receiving them while the mic carries on. The tap is rebuilt
 /// on the new default output. As a fallback it is also rebuilt when it stays
 /// (near) silent while another app is playing.
+///
+/// It is also rebuilt when it delivers the playing app in fragments. After the
+/// app's audio thread overloads (Core Audio logs "Audio IO Overload"), a running
+/// tap can keep returning exact-zero holes in every IO cycle while the user
+/// hears the call normally; Whisper turns the fragments into "you". A fresh tap
+/// receives the app intact again.
 #[cfg(target_os = "macos")]
 struct TapWatch {
     last_audible: std::time::Instant,
@@ -45,6 +51,26 @@ struct TapWatch {
     summary_peak: f32,
     summary_samples: u64,
     summary_zeros: u64,
+    frame_len: usize,
+    frame_filled: usize,
+    frame_peak: f32,
+    frame_all_zero: bool,
+    previous_frame_dead: bool,
+    window_frames: u32,
+    window_dead: u32,
+    window_live: u32,
+    window_returns: u32,
+    choppy_windows: u32,
+}
+
+/// Why a running tap has to be rebuilt.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TapFault {
+    /// Silent for a minute while another app plays.
+    Deaf,
+    /// Sound arrives with exact-zero holes cut into it.
+    Choppy,
 }
 
 #[cfg(target_os = "macos")]
@@ -57,8 +83,18 @@ impl TapWatch {
     /// After a rebuild, let the new device settle before checking again.
     const AFTER_REBUILD: std::time::Duration = std::time::Duration::from_secs(5);
     const SUMMARY_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
+    /// The tap is judged in 20 ms frames, 50 to a one-second window. A frame is
+    /// dead when every sample is exactly zero, live when it peaks above AUDIBLE.
+    const FRAMES_PER_SECOND: u32 = 50;
+    /// A choppy second has at least 10 dead and 5 live frames, and sound comes
+    /// back after a dead frame at least 4 times. Pauses in speech give one or two
+    /// returns; a broken tap gives about six (a hole every 160 ms).
+    const CHOPPY_DEAD_FRAMES: u32 = 10;
+    const CHOPPY_LIVE_FRAMES: u32 = 5;
+    const CHOPPY_RETURNS: u32 = 4;
+    const CHOPPY_SECONDS: u32 = 3;
 
-    fn new() -> Self {
+    fn new(sample_rate: u32) -> Self {
         let now = std::time::Instant::now();
         Self {
             last_audible: now,
@@ -68,11 +104,21 @@ impl TapWatch {
             summary_peak: 0.0,
             summary_samples: 0,
             summary_zeros: 0,
+            frame_len: (sample_rate / Self::FRAMES_PER_SECOND).max(1) as usize,
+            frame_filled: 0,
+            frame_peak: 0.0,
+            frame_all_zero: true,
+            previous_frame_dead: false,
+            window_frames: 0,
+            window_dead: 0,
+            window_live: 0,
+            window_returns: 0,
+            choppy_windows: 0,
         }
     }
 
-    /// Records one block from the tap; true when the tap should be rebuilt.
-    fn observe(&mut self, block: &[f32], device_name: &str) -> bool {
+    /// Records one block from the tap; the fault when the tap should be rebuilt.
+    fn observe(&mut self, block: &[f32], device_name: &str) -> Option<TapFault> {
         let now = std::time::Instant::now();
         let peak = block.iter().fold(0.0f32, |peak, sample| peak.max(sample.abs()));
         self.summary_peak = self.summary_peak.max(peak);
@@ -94,13 +140,55 @@ impl TapWatch {
             self.summary_samples = 0;
             self.summary_zeros = 0;
         }
+        if self.track_choppiness(block) {
+            return Some(TapFault::Choppy);
+        }
         if now.duration_since(self.last_audible) < Self::DEAF_AFTER
             || now.duration_since(self.last_check) < Self::RECHECK
         {
-            return false;
+            return None;
         }
         self.last_check = now;
-        super::capture::core_audio::another_app_is_playing()
+        super::capture::core_audio::another_app_is_playing().then_some(TapFault::Deaf)
+    }
+
+    /// True once the tap has been choppy for CHOPPY_SECONDS seconds in a row.
+    fn track_choppiness(&mut self, block: &[f32]) -> bool {
+        let mut choppy = false;
+        for &sample in block {
+            self.frame_peak = self.frame_peak.max(sample.abs());
+            self.frame_all_zero &= sample == 0.0;
+            self.frame_filled += 1;
+            if self.frame_filled < self.frame_len {
+                continue;
+            }
+            let dead = self.frame_all_zero;
+            let live = self.frame_peak >= Self::AUDIBLE;
+            self.window_dead += u32::from(dead);
+            self.window_live += u32::from(live);
+            self.window_returns += u32::from(live && self.previous_frame_dead);
+            self.previous_frame_dead = dead;
+            self.frame_filled = 0;
+            self.frame_peak = 0.0;
+            self.frame_all_zero = true;
+            self.window_frames += 1;
+            if self.window_frames < Self::FRAMES_PER_SECOND {
+                continue;
+            }
+            let choppy_second = self.window_dead >= Self::CHOPPY_DEAD_FRAMES
+                && self.window_live >= Self::CHOPPY_LIVE_FRAMES
+                && self.window_returns >= Self::CHOPPY_RETURNS;
+            self.choppy_windows = if choppy_second { self.choppy_windows + 1 } else { 0 };
+            self.window_frames = 0;
+            self.window_dead = 0;
+            self.window_live = 0;
+            self.window_returns = 0;
+            if self.choppy_windows >= Self::CHOPPY_SECONDS {
+                self.choppy_windows = 0;
+                choppy = true;
+            }
+        }
+        choppy
     }
 
     /// True when the default output is no longer the device the tap is built on.
@@ -121,6 +209,7 @@ impl TapWatch {
         let now = std::time::Instant::now();
         self.last_audible = now;
         self.next_output_check = now + Self::AFTER_REBUILD;
+        self.choppy_windows = 0;
     }
 }
 
@@ -459,7 +548,7 @@ impl AudioStream {
                 const STALL_POLL: std::time::Duration = std::time::Duration::from_secs(5);
                 const STALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
                 let mut stalled_for = std::time::Duration::ZERO;
-                let mut watch = TapWatch::new();
+                let mut watch = TapWatch::new(sample_rate);
                 loop {
                     let sample = match tokio::time::timeout(STALL_POLL, stream.next()).await {
                         Ok(Some(sample)) => {
@@ -524,15 +613,25 @@ impl AudioStream {
 
                     // Process when we have enough samples
                     if frame_count >= frames_per_chunk {
-                        let deaf = watch.observe(&buffer, &device_name) && target_pids.is_empty();
-                        if deaf {
-                            warn!(
+                        // Silence is judged against every app, so only the
+                        // all-computer tap acts on it; holes are in the tap's own audio.
+                        let fault = watch
+                            .observe(&buffer, &device_name)
+                            .filter(|fault| *fault == TapFault::Choppy || target_pids.is_empty());
+                        match fault {
+                            Some(TapFault::Deaf) => warn!(
                                 "System audio silent for {}s on {} while another app is playing; rebuilding the Core Audio tap",
                                 TapWatch::DEAF_AFTER.as_secs(),
                                 device_name
-                            );
+                            ),
+                            Some(TapFault::Choppy) => warn!(
+                                "System audio on {} has arrived with holes for {}s; rebuilding the Core Audio tap",
+                                device_name,
+                                TapWatch::CHOPPY_SECONDS
+                            ),
+                            None => {}
                         }
-                        if deaf || watch.output_moved(stream.output_device()) {
+                        if fault.is_some() || watch.output_moved(stream.output_device()) {
                             if let Some(fresh) = rebuild_tap(&target_pids, sample_rate, &device_name) {
                                 stream = fresh;
                             }
@@ -970,5 +1069,48 @@ impl Drop for AudioStreamManager {
         if let Err(e) = self.stop_streams() {
             error!("Error stopping streams during drop: {}", e);
         }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::{TapFault, TapWatch};
+
+    const RATE: u32 = 48_000;
+
+    /// `seconds` of tap audio: `sound_ms` of noise then `hole_ms` of exact
+    /// zeros, repeated; returns the second at which the watch first faults.
+    fn first_fault(sound_ms: usize, hole_ms: usize, seconds: usize) -> Option<f64> {
+        let mut watch = TapWatch::new(RATE);
+        let period = (sound_ms + hole_ms) * RATE as usize / 1000;
+        let sound = sound_ms * RATE as usize / 1000;
+        let mut seed = 1u32;
+        let samples: Vec<f32> = (0..seconds * RATE as usize)
+            .map(|i| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                if i % period < sound { (seed >> 8) as f32 / (1u32 << 24) as f32 * 0.6 - 0.3 } else { 0.0 }
+            })
+            .collect();
+        samples.chunks(1024).enumerate().find_map(|(index, block)| {
+            (watch.observe(block, "test") == Some(TapFault::Choppy)).then(|| (index + 1) as f64 * 1024.0 / RATE as f64)
+        })
+    }
+
+    #[test]
+    fn a_tap_cut_into_fragments_is_rebuilt_within_four_seconds() {
+        // Weaver, 2 Nov: 61 ms of the call, then 99 ms of exact zeros, for two minutes.
+        let at = first_fault(61, 99, 10).expect("choppy tap not detected");
+        assert!((3.0..4.1).contains(&at), "detected at {at}s");
+    }
+
+    #[test]
+    fn pauses_between_sentences_are_not_holes() {
+        assert_eq!(first_fault(800, 400, 30), None);
+        assert_eq!(first_fault(1900, 100, 30), None);
+    }
+
+    #[test]
+    fn silence_is_not_choppy() {
+        assert_eq!(first_fault(0, 1000, 30), None);
     }
 }
