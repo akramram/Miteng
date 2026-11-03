@@ -119,7 +119,13 @@
         "macOS": {
             "entitlements": "entitlements.plist",
             "signingIdentity": "-",
-            "hardenedRuntime": true
+            "hardenedRuntime": true,
+            "dmg": {
+                "background": "./dmg/background.tiff",
+                "windowSize": { "width": 660, "height": 420 },
+                "appPosition": { "x": 170, "y": 190 },
+                "applicationFolderPosition": { "x": 490, "y": 190 }
+            }
         },
         "windows": {
             "signCommand": "powershell -ExecutionPolicy Bypass -File scripts/sign-windows.ps1 -FilePath %1",
