@@ -61,13 +61,15 @@ struct TapWatch {
     window_live: u32,
     window_returns: u32,
     choppy_windows: u32,
+    /// Silence that triggers the next rebuild; doubles while silence persists.
+    deaf_after: std::time::Duration,
 }
 
 /// Why a running tap has to be rebuilt.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum TapFault {
-    /// Silent for a minute while another app plays.
+    /// Silent while another app plays.
     Deaf,
     /// Sound arrives with exact-zero holes cut into it.
     Choppy,
@@ -78,9 +80,12 @@ impl TapWatch {
     /// −60 dBFS.
     const AUDIBLE: f32 = 0.001;
     /// A short system hang (the playing app's IO thread overloading) can leave a
-    /// running tap returning silence for good. Rebuilding during real silence
-    /// loses nothing, so act after a few seconds rather than waiting.
+    /// running tap returning silence for good, so the first rebuild comes after
+    /// 5 s. Calls also go digitally silent in long pauses; while silence goes on
+    /// the wait doubles up to a minute, so a quiet stretch costs a few rebuilds,
+    /// not one every 5 s, and sound resets it.
     const DEAF_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
+    const DEAF_AFTER_MAX: std::time::Duration = std::time::Duration::from_secs(60);
     const RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
     const OUTPUT_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
     /// After a rebuild, let the new device settle before checking again.
@@ -117,6 +122,7 @@ impl TapWatch {
             window_live: 0,
             window_returns: 0,
             choppy_windows: 0,
+            deaf_after: Self::DEAF_AFTER,
         }
     }
 
@@ -129,6 +135,7 @@ impl TapWatch {
         self.summary_zeros += block.iter().filter(|sample| **sample == 0.0).count() as u64;
         if peak >= Self::AUDIBLE {
             self.last_audible = now;
+            self.deaf_after = Self::DEAF_AFTER;
         }
         if now.duration_since(self.summary_start) >= Self::SUMMARY_EVERY {
             info!(
@@ -146,13 +153,17 @@ impl TapWatch {
         if self.track_choppiness(block) {
             return Some(TapFault::Choppy);
         }
-        if now.duration_since(self.last_audible) < Self::DEAF_AFTER
+        if now.duration_since(self.last_audible) < self.deaf_after
             || now.duration_since(self.last_check) < Self::RECHECK
         {
             return None;
         }
         self.last_check = now;
-        super::capture::core_audio::another_app_is_playing().then_some(TapFault::Deaf)
+        if !super::capture::core_audio::another_app_is_playing() {
+            return None;
+        }
+        self.deaf_after = (self.deaf_after * 2).min(Self::DEAF_AFTER_MAX);
+        Some(TapFault::Deaf)
     }
 
     /// True once the tap has been choppy for CHOPPY_SECONDS seconds in a row.
@@ -623,8 +634,7 @@ impl AudioStream {
                             .filter(|fault| *fault == TapFault::Choppy || target_pids.is_empty());
                         match fault {
                             Some(TapFault::Deaf) => warn!(
-                                "System audio silent for {}s on {} while another app is playing; rebuilding the Core Audio tap",
-                                TapWatch::DEAF_AFTER.as_secs(),
+                                "System audio silent on {} while another app is playing; rebuilding the Core Audio tap",
                                 device_name
                             ),
                             Some(TapFault::Choppy) => warn!(
@@ -1115,5 +1125,21 @@ mod tests {
     #[test]
     fn silence_is_not_choppy() {
         assert_eq!(first_fault(0, 1000, 30), None);
+    }
+
+    // [DEBUG-7c2e] how long a rebuild takes and how long until the new tap delivers.
+    #[test]
+    #[ignore]
+    fn debug_7c2e_rebuild_gap() {
+        use futures_util::StreamExt;
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for _ in 0..5 {
+                let t0 = std::time::Instant::now();
+                let mut stream = super::rebuild_tap(&[], RATE, "probe").unwrap();
+                let built = t0.elapsed();
+                stream.next().await;
+                println!("[DEBUG-7c2e] build {:?}, first sample {:?}", built, t0.elapsed());
+            }
+        });
     }
 }
