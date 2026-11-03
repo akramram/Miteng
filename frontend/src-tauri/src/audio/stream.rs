@@ -1126,20 +1126,4 @@ mod tests {
     fn silence_is_not_choppy() {
         assert_eq!(first_fault(0, 1000, 30), None);
     }
-
-    // [DEBUG-7c2e] how long a rebuild takes and how long until the new tap delivers.
-    #[test]
-    #[ignore]
-    fn debug_7c2e_rebuild_gap() {
-        use futures_util::StreamExt;
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            for _ in 0..5 {
-                let t0 = std::time::Instant::now();
-                let mut stream = super::rebuild_tap(&[], RATE, "probe").unwrap();
-                let built = t0.elapsed();
-                stream.next().await;
-                println!("[DEBUG-7c2e] build {:?}, first sample {:?}", built, t0.elapsed());
-            }
-        });
-    }
 }
