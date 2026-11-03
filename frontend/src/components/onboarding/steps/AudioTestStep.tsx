@@ -5,7 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 import { usePlatform } from '@/hooks/usePlatform';
-import { MACOS_SYSTEM_AUDIO_VERIFIED_KEY } from '@/hooks/usePermissionCheck';
+import { requestAudioPermissionsAtLaunch } from '@/lib/audio-permissions';
 import { OnboardingContainer } from '../OnboardingContainer';
 import { Check, Mic, Volume2, RefreshCw } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -87,12 +87,8 @@ export function AudioTestStep() {
         }
 
         try {
-          // Ask the OS for mic permission before opening streams.
-          try {
-            await invoke('trigger_microphone_permission');
-          } catch {
-            /* non-fatal */
-          }
+          // The launch prompts must be answered before streams open.
+          await requestAudioPermissionsAtLaunch().catch(() => undefined);
           if (!active.current || run !== meterRun.current) return;
 
           if (isMacOS && sys) {
@@ -100,7 +96,6 @@ export function AudioTestStep() {
             try {
               const detected = await invoke<boolean>('trigger_system_audio_permission_command');
               if (!active.current || run !== meterRun.current) return;
-              window.sessionStorage.setItem(MACOS_SYSTEM_AUDIO_VERIFIED_KEY, String(detected));
               setSysHeard(detected);
               setSysRms(detected ? 0.2 : 0);
               if (!detected) {
@@ -110,7 +105,6 @@ export function AudioTestStep() {
               }
             } catch (systemError) {
               if (!active.current || run !== meterRun.current) return;
-              window.sessionStorage.setItem(MACOS_SYSTEM_AUDIO_VERIFIED_KEY, 'false');
               const message =
                 typeof systemError === 'string'
                   ? systemError

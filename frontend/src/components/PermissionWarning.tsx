@@ -54,7 +54,7 @@ export function PermissionWarning({
             {hasMicrophone
               ? 'You can still record your microphone, but the other side of the call won’t be captured.'
               : 'Computer audio capture is unavailable too.'}
-            {isMacOS && ' On macOS, allow Audio Capture for Miteng, play some audio, then check again. Restart Miteng if it stays silent.'}
+            {isMacOS && ' Open Audio Capture settings, turn on Miteng, then check again.'}
           </p>
         )}
         <div className="flex flex-wrap gap-2 pt-1">

@@ -149,6 +149,181 @@ pub async fn trigger_system_audio_permission_command() -> Result<bool, String> {
     .map_err(|e| e.to_string())
 }
 
+/// The user's answer to a macOS privacy prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Access {
+    Authorized,
+    Denied,
+    NotDetermined,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioAccess {
+    pub microphone: Access,
+    pub system_audio: Access,
+}
+
+/// Microphone and Audio Capture access as macOS records it, without prompting.
+#[tauri::command]
+pub async fn get_audio_permissions() -> AudioAccess {
+    AudioAccess {
+        microphone: access::microphone(),
+        system_audio: access::audio_capture(),
+    }
+}
+
+/// Shows the microphone and Audio Capture prompts the user has not answered
+/// yet, one after the other. Answered ones return at once without a prompt.
+#[tauri::command]
+pub async fn request_audio_permissions() -> AudioAccess {
+    // Each request waits for the user's answer, so keep it off the async runtime.
+    let access = tokio::task::spawn_blocking(|| AudioAccess {
+        microphone: access::request_microphone(),
+        system_audio: access::request_audio_capture(),
+    })
+    .await
+    .unwrap_or_else(|_| AudioAccess {
+        microphone: access::microphone(),
+        system_audio: access::audio_capture(),
+    });
+    info!(
+        "Audio permissions: microphone {:?}, Audio Capture {:?}",
+        access.microphone, access.system_audio
+    );
+    access
+}
+
+#[cfg(not(target_os = "macos"))]
+mod access {
+    use super::Access;
+
+    pub fn microphone() -> Access {
+        Access::Authorized
+    }
+
+    pub fn audio_capture() -> Access {
+        Access::Authorized
+    }
+
+    pub fn request_microphone() -> Access {
+        Access::Authorized
+    }
+
+    pub fn request_audio_capture() -> Access {
+        Access::Authorized
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod access {
+    use super::Access;
+    use cidre::{av, blocks, cf};
+    use log::warn;
+    use std::ffi::{c_char, c_int, c_void};
+    use std::sync::{mpsc, LazyLock};
+
+    pub fn microphone() -> Access {
+        match av::CaptureDevice::authorization_status_for_media_type(av::MediaType::audio()) {
+            Ok(av::AuthorizationStatus::Authorized) => Access::Authorized,
+            Ok(av::AuthorizationStatus::Denied | av::AuthorizationStatus::Restricted) => Access::Denied,
+            Ok(av::AuthorizationStatus::NotDetermined) => Access::NotDetermined,
+            Err(e) => {
+                warn!("Microphone authorization status unavailable: {e:?}");
+                Access::NotDetermined
+            }
+        }
+    }
+
+    pub fn request_microphone() -> Access {
+        let status = microphone();
+        if status != Access::NotDetermined {
+            return status;
+        }
+        let answer = wait_for_answer(|block| {
+            if let Err(e) = av::CaptureDevice::request_access_for_media_type_ch(av::MediaType::audio(), block) {
+                warn!("Microphone access request failed: {e:?}");
+            }
+        });
+        answer.map_or_else(microphone, granted)
+    }
+
+    fn granted(yes: bool) -> Access {
+        if yes {
+            Access::Authorized
+        } else {
+            Access::Denied
+        }
+    }
+
+    /// Runs a request that answers through a completion block and waits for it.
+    /// None when the request dropped the block without answering.
+    fn wait_for_answer(ask: impl FnOnce(&mut blocks::SendBlock<fn(bool)>)) -> Option<bool> {
+        let (tx, rx) = mpsc::channel();
+        let mut block = blocks::SendBlock::new1(move |yes: bool| {
+            let _ = tx.send(yes);
+        });
+        ask(&mut block);
+        drop(block);
+        rx.recv().ok()
+    }
+
+    // Audio Capture has no public status API; the TCC calls below are the
+    // ones System Settings itself reads. They answer for this app bundle.
+    const SERVICE: &str = "kTCCServiceAudioCapture";
+    const RTLD_NOW: c_int = 2;
+
+    extern "C" {
+        fn dlopen(path: *const c_char, mode: c_int) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    }
+
+    type Preflight = unsafe extern "C" fn(&cf::String, Option<&cf::Dictionary>) -> c_int;
+    type Request =
+        unsafe extern "C" fn(&cf::String, Option<&cf::Dictionary>, &blocks::SendBlock<fn(bool)>);
+
+    struct Tcc {
+        preflight: Preflight,
+        request: Request,
+    }
+
+    static TCC: LazyLock<Option<Tcc>> = LazyLock::new(|| unsafe {
+        let handle = dlopen(
+            c"/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC".as_ptr(),
+            RTLD_NOW,
+        );
+        let symbol = |name: &std::ffi::CStr| if handle.is_null() { handle } else { dlsym(handle, name.as_ptr()) };
+        let (preflight, request) = (symbol(c"TCCAccessPreflight"), symbol(c"TCCAccessRequest"));
+        if preflight.is_null() || request.is_null() {
+            warn!("TCC is unavailable; Audio Capture access cannot be read");
+            return None;
+        }
+        Some(Tcc {
+            preflight: std::mem::transmute::<*mut c_void, Preflight>(preflight),
+            request: std::mem::transmute::<*mut c_void, Request>(request),
+        })
+    });
+
+    pub fn audio_capture() -> Access {
+        let Some(tcc) = TCC.as_ref() else { return Access::NotDetermined };
+        let service = cf::String::from_str(SERVICE);
+        match unsafe { (tcc.preflight)(&service, None) } {
+            0 => Access::Authorized,
+            1 => Access::Denied,
+            _ => Access::NotDetermined,
+        }
+    }
+
+    pub fn request_audio_capture() -> Access {
+        let status = audio_capture();
+        let Some(tcc) = TCC.as_ref().filter(|_| status == Access::NotDetermined) else { return status };
+        let service = cf::String::from_str(SERVICE);
+        let answer = wait_for_answer(|block| unsafe { (tcc.request)(&service, None, block) });
+        answer.map_or_else(audio_capture, granted)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

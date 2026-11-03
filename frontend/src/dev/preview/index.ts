@@ -514,6 +514,9 @@ function handle(cmd: string, args: Args): unknown {
         { name: 'Headset Microphone (Jabra Evolve2 65 – Bluetooth Hands-Free)', device_type: 'Input' },
         { name: 'MacBook Pro Speakers', device_type: 'Output' },
       ];
+    case 'get_audio_permissions':
+    case 'request_audio_permissions':
+      return { microphone: 'authorized', systemAudio: 'authorized' };
     case 'get_recording_preferences':
       return { ...state.recordingPrefs, per_app_targets: [...state.recordingPrefs.per_app_targets] };
     case 'set_recording_preferences':

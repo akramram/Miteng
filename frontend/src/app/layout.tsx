@@ -38,6 +38,7 @@ import { CHROME_BOOT_SCRIPT } from '@/lib/window-chrome'
 import { RecordingPill } from '@/components/recording/RecordingPill'
 import { GroupEditorHost } from '@/components/groups/GroupEditor'
 import { RecordingNotice } from '@/components/RecordingNotice'
+import { requestAudioPermissionsAtLaunch } from '@/lib/audio-permissions'
 
 // Development only: in a plain browser (no Tauri bridge) serve sample data so
 // screens can be reviewed at http://localhost:3118. Stripped from production.
@@ -239,6 +240,16 @@ export default function RootLayout({
       window.clearTimeout(timer)
     }
   }, [startupAttempt])
+
+  // Ask for the microphone and Audio Capture as soon as the app opens, so the
+  // user answers macOS once instead of meeting a warning later. Answered
+  // prompts do not show again.
+  useEffect(() => {
+    if (!startupResolved || isMinibar) return
+    requestAudioPermissionsAtLaunch().catch((error) =>
+      console.warn('[Layout] Audio permission request failed:', error),
+    )
+  }, [startupResolved, isMinibar])
 
   // Disable context menu in production
   useEffect(() => {
