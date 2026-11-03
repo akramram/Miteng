@@ -1116,32 +1116,4 @@ mod tests {
     fn silence_is_not_choppy() {
         assert_eq!(first_fault(0, 1000, 30), None);
     }
-
-    // [DEBUG-7c2e] real tap + TapWatch + rebuild_tap for 12 s; zero tenths per 0.5 s.
-    #[test]
-    #[ignore]
-    fn debug_7c2e_watch_real_tap() {
-        use futures_util::StreamExt;
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let mut stream = crate::audio::capture::CoreAudioCapture::new().unwrap().stream().unwrap();
-            let mut watch = TapWatch::new(RATE);
-            let (mut block, mut all) = (Vec::new(), Vec::new());
-            let end = std::time::Instant::now() + std::time::Duration::from_secs(12);
-            while std::time::Instant::now() < end {
-                let Ok(Some(s)) = tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await else { continue };
-                block.push(s);
-                if block.len() == 1024 {
-                    if let Some(fault) = watch.observe(&block, "probe") {
-                        println!("[DEBUG-7c2e] {:?} at {:.1}s", fault, all.len() as f64 / 48000.0);
-                        stream = super::rebuild_tap(&[], RATE, "probe").unwrap();
-                        watch.rebuilt();
-                    }
-                    all.extend_from_slice(&block);
-                    block.clear();
-                }
-            }
-            let t: String = all.chunks(24000).map(|h| char::from_digit((h.iter().filter(|s| **s == 0.0).count() * 10 / h.len()).min(9) as u32, 10).unwrap()).collect();
-            println!("[DEBUG-7c2e] zero tenths per 0.5 s: {}", t);
-        });
-    }
 }
