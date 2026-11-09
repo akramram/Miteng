@@ -74,7 +74,7 @@ fn resolve_final_language_action(
     }
 }
 
-fn english_normalization_system_prompt() -> &'static str {
+fn english_normalization_rules() -> &'static str {
     r#"You are a precise English Markdown editor. Convert the provided Markdown document into English while preserving structure exactly.
 
 **CRITICAL RULES:**
@@ -149,7 +149,7 @@ pub(crate) fn language_name_from_code(code: &str) -> Option<&'static str> {
     }
 }
 
-fn translation_system_prompt(target_language: &str) -> String {
+fn translation_rules(target_language: &str) -> String {
     format!(
         r#"You are a precise translator. Translate the provided Markdown document into {target_language} while preserving structure exactly.
 
@@ -627,7 +627,7 @@ async fn run_markdown_transform(
     provider: &LLMProvider,
     model_name: &str,
     api_key: &str,
-    system_prompt: &str,
+    rules: &str,
     user_prompt: &str,
     failure_label: &str,
     ollama_endpoint: Option<&str>,
@@ -645,13 +645,16 @@ async fn run_markdown_transform(
         }
     }
 
+    // The rules travel in the user message. With them in the system message,
+    // Claude behind some OpenAI-compatible routers answered a table-heavy
+    // document with its tables as a JSON array instead of Markdown.
     let raw = generate_summary(
         client,
         provider,
         model_name,
         api_key,
-        system_prompt,
-        user_prompt,
+        MARKDOWN_TRANSFORM_SYSTEM_PROMPT,
+        &format!("{rules}\n\n{user_prompt}"),
         ollama_endpoint,
         custom_openai_endpoint,
         max_tokens,
@@ -664,7 +667,23 @@ async fn run_markdown_transform(
     .await
     .map_err(|e| format!("{failure_label} failed: {e}"))?;
 
-    require_meaningful_summary(&raw, failure_label)
+    let markdown = require_meaningful_summary(&raw, failure_label)?;
+    reject_json_reply(&markdown, failure_label)?;
+    Ok(markdown)
+}
+
+const MARKDOWN_TRANSFORM_SYSTEM_PROMPT: &str =
+    "You rewrite Markdown documents as the user message instructs and reply with Markdown only.";
+
+/// A Markdown document never parses as a JSON array or object; such a reply
+/// would replace the summary with raw data.
+fn reject_json_reply(markdown: &str, stage: &str) -> Result<(), String> {
+    match serde_json::from_str::<serde_json::Value>(markdown) {
+        Ok(value) if value.is_array() || value.is_object() => Err(format!(
+            "{stage} returned JSON instead of Markdown; try again or pick another model"
+        )),
+        _ => Ok(()),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -686,7 +705,7 @@ async fn translate_markdown(
 ) -> Result<String, String> {
     info!("Translation pass: target language = {}", target_language);
 
-    let system_prompt = translation_system_prompt(target_language);
+    let rules = translation_rules(target_language);
     let user_prompt = format!(
         "Translate the following Markdown document into {target_language}. Return ONLY the translated Markdown, nothing else.\n\n<document>\n{english_markdown}\n</document>"
     );
@@ -696,7 +715,7 @@ async fn translate_markdown(
         provider,
         model_name,
         api_key,
-        &system_prompt,
+        &rules,
         &user_prompt,
         "Translation pass",
         ollama_endpoint,
@@ -738,7 +757,7 @@ async fn normalize_markdown_to_english(
         provider,
         model_name,
         api_key,
-        english_normalization_system_prompt(),
+        english_normalization_rules(),
         &user_prompt,
         "English normalization pass",
         ollama_endpoint,
@@ -756,6 +775,15 @@ async fn normalize_markdown_to_english(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_replies_are_not_accepted_as_markdown() {
+        let table_as_json = r#"[{"Ticket / Feature":"Web: Banner","Assignee":"Mas Akram"}]"#;
+        assert!(reject_json_reply(table_as_json, "Translation pass").is_err());
+        assert!(reject_json_reply(r#"{"markdown":"x"}"#, "Translation pass").is_err());
+        assert!(reject_json_reply("# Ringkasan\n\n| A | B |\n| --- | --- |\n| 1 | 2 |", "Translation pass").is_ok());
+        assert!(reject_json_reply("[Catatan] Rapat ditunda.", "Translation pass").is_ok());
+    }
 
     #[test]
     fn chunk_text_preserves_content_after_early_sentence_boundary() {
