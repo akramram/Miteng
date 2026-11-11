@@ -1,6 +1,6 @@
 [package]
 name = "miteng"
-version = "0.2.21"
+version = "0.2.22"
 description = "Miteng: privacy-first AI meeting assistant"
 authors = ["Akram"]
 edition = "2021"
