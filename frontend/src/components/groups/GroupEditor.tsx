@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * Create or edit a group: name, color, what kind of group it is, a note, and
- * an optional schedule. Mounted once (GroupEditorHost) and opened from
+ * Create or edit a group: name, color, what kind of group it is, a note, an
+ * optional schedule, and an optional transcription language. Mounted once (GroupEditorHost) and opened from
  * anywhere with `openGroupEditor`, so the sidebar, pickers, group pages, and
  * the command bar all share one editor.
  */
@@ -17,6 +17,8 @@ import { Switch } from '@/components/ui/switch';
 import { TimePicker } from '@/components/ui/time-picker';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ColorSwatches } from '@/components/groups/GroupBits';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { LANGUAGES } from '@/components/LanguageSelection';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
 import { colorForName } from '@/lib/group-colors';
 import {
@@ -61,6 +63,8 @@ export function kindIcon(kind?: string | null): LucideIcon {
 }
 
 const DEFAULT_SCHEDULE: GroupSchedule = { weekdays: [1], time: '09:00', cadence: 'weekly' };
+/** Select value for a group without a language; Radix items can't be empty. */
+const NO_LANGUAGE = 'none';
 
 export function GroupEditorHost() {
   const { groupById } = useWorkspace();
@@ -100,6 +104,7 @@ function GroupEditorDialog({
   const [color, setColor] = useState(existing?.color ?? (request.name ? colorForName(request.name) : 'blue'));
   const [kind, setKind] = useState<GroupKind>((existing?.kind as GroupKind) ?? 'recurring');
   const [description, setDescription] = useState(existing?.description ?? '');
+  const [language, setLanguage] = useState<string | null>(existing?.language ?? null);
   const initialSchedule = isValidSchedule(existing?.schedule) ? existing!.schedule! : null;
   const [scheduleOn, setScheduleOn] = useState(!!initialSchedule);
   const [schedule, setSchedule] = useState<GroupSchedule>(initialSchedule ?? request.suggestedSchedule ?? DEFAULT_SCHEDULE);
@@ -126,6 +131,7 @@ function GroupEditorDialog({
       kind,
       description: description.trim() || null,
       schedule: scheduleOn ? { ...schedule, anchorDate: schedule.anchorDate ?? null } : null,
+      language,
     };
     try {
       const saved = editing ? await updateGroup(existing!.id, input) : await createGroup(input);
@@ -285,6 +291,26 @@ function GroupEditorDialog({
                 {schedule.weekdays.length === 0 && <p className="text-xs text-af-danger">Pick at least one day.</p>}
               </div>
             )}
+          </div>
+
+          <div className="space-y-1.5">
+            <span id="group-language-label" className="text-xs font-medium text-af-text-2">
+              Language
+            </span>
+            <Select value={language ?? NO_LANGUAGE} onValueChange={(value) => setLanguage(value === NO_LANGUAGE ? null : value)}>
+              <SelectTrigger aria-labelledby="group-language-label">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_LANGUAGE}>Keep the current language</SelectItem>
+                {LANGUAGES.map((option) => (
+                  <SelectItem key={option.code} value={option.code}>
+                    {option.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-af-text-3">Choosing this group for a recording switches transcription to this language.</p>
           </div>
 
           <div className="space-y-1.5">

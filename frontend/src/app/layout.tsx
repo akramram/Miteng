@@ -37,6 +37,7 @@ import { RouteWarmup } from '@/components/RouteWarmup'
 import { CHROME_BOOT_SCRIPT } from '@/lib/window-chrome'
 import { RecordingPill } from '@/components/recording/RecordingPill'
 import { GroupEditorHost } from '@/components/groups/GroupEditor'
+import { GroupLanguageSync } from '@/components/groups/GroupLanguageSync'
 import { RecordingNotice } from '@/components/RecordingNotice'
 import { requestAudioPermissionsAtLaunch } from '@/lib/audio-permissions'
 
@@ -560,6 +561,7 @@ export default function RootLayout({
                                     <MainContent>{children}</MainContent>
                                     <RecordingPill />
                                     <GroupEditorHost />
+                                    <GroupLanguageSync />
                                     <RecordingNotice onAcknowledged={acknowledgeRecordingNotice} />
                                   </div>
                                 )}

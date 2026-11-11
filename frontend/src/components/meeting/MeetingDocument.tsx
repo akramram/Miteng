@@ -82,6 +82,8 @@ export interface MeetingDocumentProps {
   /** Prefill for the regenerate dialog, e.g. after a speaker rename. */
   regenerateRequest: { open: boolean; context: string; reason?: string } | null;
   onRegenerateRequestHandled: () => void;
+  /** The recording was trimmed or restored after this summary was written. */
+  summaryStale?: boolean;
 }
 
 const SUGGESTIONS = ['Focus on decisions and owners', 'Keep it to five bullets', 'Highlight open questions', 'Use a more formal tone'];
@@ -163,6 +165,7 @@ function NotesTab({
   onManageTemplates,
   regenerateRequest,
   onRegenerateRequestHandled,
+  summaryStale = false,
 }: MeetingDocumentProps) {
   // ---- Notes ---------------------------------------------------------------
   const [notes, setNotes] = useState<{ loaded: boolean; json: unknown[] | null; markdown: string | null }>({
@@ -472,6 +475,18 @@ function NotesTab({
               </div>
               <Button size="xs" variant="secondary" onClick={() => (hasSummary ? setRegenerateOpen(true) : onGenerate())}>
                 Try again
+              </Button>
+            </div>
+          )}
+
+          {summaryStale && hasSummary && !generating && !summaryError && (
+            <div role="status" className="mb-3 flex items-start gap-3 rounded-xl border border-af-warning/30 bg-af-warning/[0.07] px-3.5 py-3">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-af-warning" />
+              <p className="min-w-0 flex-1 text-xs text-af-text-2">
+                The recording changed after this summary was written, so it may mention parts that are no longer in the transcript.
+              </p>
+              <Button size="xs" variant="secondary" onClick={() => setRegenerateOpen(true)} disabled={!hasTranscript}>
+                Regenerate
               </Button>
             </div>
           )}

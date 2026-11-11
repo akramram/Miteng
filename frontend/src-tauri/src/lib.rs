@@ -964,6 +964,12 @@ pub fn run() {
             audio::retranscription::start_retranscription_command,
             audio::retranscription::cancel_retranscription_command,
             audio::retranscription::is_retranscription_in_progress_command,
+            // Trimming a finished recording
+            audio::trim::api_get_meeting_trim,
+            audio::trim::api_preview_meeting_trim,
+            audio::trim::api_trim_meeting,
+            audio::trim::api_restore_meeting_original,
+            audio::trim::api_delete_meeting_original,
             // Import audio commands
             audio::import::select_and_validate_audio_command,
             audio::import::validate_audio_file_command,

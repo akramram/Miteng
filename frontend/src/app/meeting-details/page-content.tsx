@@ -22,6 +22,7 @@ import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptVie
 import { MeetingHeader } from '@/components/meeting/MeetingHeader';
 import { MeetingDocument } from '@/components/meeting/MeetingDocument';
 import { AudioPlayerBar } from '@/components/meeting/AudioPlayerBar';
+import { TrimRecordingDialog, type TrimChange } from '@/components/meeting/TrimRecordingDialog';
 import { PersonCard, type PersonCardTarget } from '@/components/people/PersonCard';
 import { SpeakerIdentityDialog } from '@/components/people/SpeakerIdentityDialog';
 import { useMeetingData } from '@/hooks/meeting-details/useMeetingData';
@@ -30,11 +31,11 @@ import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { PLAYBACK_RATES, SLOW_PLAYBACK_RATES, useMeetingAudio } from '@/hooks/useMeetingAudio';
-import { useWaveform } from '@/hooks/useWaveform';
+import { forgetWaveform, useWaveform } from '@/hooks/useWaveform';
 import { useLabs } from '@/hooks/useLabs';
 import { cleanTranscriptText } from '@/lib/labs';
 import { useUserName } from '@/hooks/useUserName';
-import { announceChange, getMeetingGroup, setMeetingGroup } from '@/lib/workspace-api';
+import { announceChange, getMeetingGroup, getMeetingTrim, setMeetingGroup, type TrimState } from '@/lib/workspace-api';
 import { deleteMeetings, renameMeeting } from '@/lib/meeting-actions';
 import { displayTitle } from '@/lib/meeting-titles';
 import { cn } from '@/lib/utils';
@@ -107,11 +108,15 @@ export default function PageContent({
   const [cardTarget, setCardTarget] = useState<PersonCardTarget | null>(null);
   const [identity, setIdentity] = useState<{ speaker: string; transcriptId: string | null } | null>(null);
   const [regenerateRequest, setRegenerateRequest] = useState<{ open: boolean; context: string; reason?: string } | null>(null);
+  const [trimState, setTrimState] = useState<TrimState | null>(null);
+  const [trimOpen, setTrimOpen] = useState(false);
+  // Bumped when trimming replaces the audio file, so the player loads it again.
+  const [audioRevision, setAudioRevision] = useState(0);
 
   const meetingData = useMeetingData({ meeting, summaryData });
   const templates = useTemplates();
   const meetingOperations = useMeetingOperations({ meeting });
-  const audio = useMeetingAudio(meeting.id);
+  const audio = useMeetingAudio(meeting.id, audioRevision);
   // Labs: waveform and slower speeds in the player, Clean/Verbatim transcript.
   const { labs, ready: labsReady } = useLabs();
   const waveform = useWaveform(audio.path, labs.transcriptScrubbing);
@@ -210,6 +215,29 @@ export default function PageContent({
     // New summaries are written from the clean text when Labs asks for it.
     cleanText: labs.cleanTranscript ? cleanTranscriptText : undefined,
   });
+
+  // Trim state: whether an original is kept, and whether the summary predates
+  // the last trim. A finished summary can clear the stale flag.
+  const summaryCompleted = summaryGeneration.summaryStatus === 'completed';
+  useEffect(() => {
+    if (!meeting.folder_path) return;
+    let cancelled = false;
+    void getMeetingTrim(meeting.id)
+      .then((state) => !cancelled && setTrimState(state))
+      .catch(() => !cancelled && setTrimState(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [meeting.id, meeting.folder_path, summaryCompleted]);
+
+  const handleTrimChange = async (next: TrimState, change: TrimChange) => {
+    setTrimState(next);
+    if (change === 'deleted') return;
+    if (audio.path) forgetWaveform(audio.path);
+    setAudioRevision((current) => current + 1);
+    await onRefetchTranscripts?.();
+    announceChange('meetings', { meetingId: meeting.id });
+  };
 
   const handleSaveModelConfig = async (config?: ModelConfig) => {
     if (!config) return;
@@ -425,6 +453,8 @@ export default function PageContent({
           await deleteMeetings([meeting.id]);
         }}
         onTranscriptChanged={() => refreshAfterSpeakerChange()}
+        onTrim={trimState ? () => setTrimOpen(true) : undefined}
+        originalKept={!!trimState?.original}
       />
 
       <div
@@ -519,6 +549,7 @@ export default function PageContent({
             onManageTemplates={() => setTemplateEditorOpen(true)}
             regenerateRequest={regenerateRequest}
             onRegenerateRequestHandled={() => setRegenerateRequest(null)}
+            summaryStale={trimState?.summaryStale}
           />
         </aside>
       </div>
@@ -558,6 +589,17 @@ export default function PageContent({
         hasSummary={!!meetingData.aiSummary}
         onExport={copyOperations.handleExportMeeting}
       />
+      {trimState && (
+        <TrimRecordingDialog
+          key={trimOpen ? 'open' : 'closed'}
+          open={trimOpen}
+          onOpenChange={setTrimOpen}
+          meetingId={meeting.id}
+          state={trimState}
+          onChanged={(next, change) => void handleTrimChange(next, change)}
+          onListen={audio.status === 'ready' ? (seconds) => audio.seek(seconds, true) : undefined}
+        />
+      )}
       <PostCallProcessingDialog
         enabled={isPostCallRecording}
         meetingId={meeting.id}

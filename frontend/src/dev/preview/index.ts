@@ -36,7 +36,7 @@ interface ActionItemRow {
 
 const state = {
   meetings: fx.meetings.map((meeting) => ({ ...meeting })),
-  groups: fx.groups.map((group) => ({ ...group, createdAt: new Date(Date.now() - 60 * 86_400_000).toISOString() })),
+  groups: fx.groups.map((group) => ({ ...group, language: null as string | null, createdAt: new Date(Date.now() - 60 * 86_400_000).toISOString() })),
   people: fx.people.map((person) => ({ ...person })),
   links: fx.speakerLinks.map((link) => ({ ...link })),
   notes: new Map<string, { markdown: string | null; json: unknown[] | null; updatedAt: string }>(),
@@ -44,6 +44,8 @@ const state = {
   actionItems: [] as ActionItemRow[],
   actionSynced: new Set<string>(),
   transcripts: new Map<string, fx.PreviewTranscript[]>(),
+  // Trimmed meetings: the untrimmed transcript and length, until deleted.
+  trims: new Map<string, { original: fx.PreviewTranscript[] | null; originalSeconds: number; trimmedAt: string; stale: boolean }>(),
   diarization: {
     active_engine: 'pyannote',
     nemotron_available: false,
@@ -271,6 +273,7 @@ function groupSummary(group: (typeof state.groups)[number]) {
     kind: group.kind,
     description: group.description ?? null,
     schedule: group.schedule ?? null,
+    language: group.language ?? null,
     meetingCount: members.length,
     lastMeetingAt: last?.created_at,
     lastMeetingId: last?.id,
@@ -799,6 +802,50 @@ function handle(cmd: string, args: Args): unknown {
       return transcripts(args.meetingId).length > 0
         ? { path: `${PREVIEW_AUDIO}${args.meetingId}`, micPath: null, systemPath: null }
         : { path: null, micPath: null, systemPath: null };
+    case 'api_get_meeting_trim': {
+      const trim = state.trims.get(args.meetingId);
+      return {
+        durationSeconds: previewDuration(args.meetingId),
+        original: trim?.original ? { durationSeconds: trim.originalSeconds, trimmedAt: trim.trimmedAt } : null,
+        summaryStale: !!trim?.stale && !!summary(args.meetingId),
+      };
+    }
+    case 'api_preview_meeting_trim': {
+      const rows = transcripts(args.meetingId);
+      const kept = rows.filter((row) => row.audio_start_time < args.endSeconds);
+      const last = kept[kept.length - 1];
+      return {
+        lastKept: last ? { speaker: last.speaker ?? null, text: last.text, startSeconds: last.audio_start_time } : null,
+        removedLines: rows.length - kept.length,
+      };
+    }
+    case 'api_trim_meeting': {
+      const rows = transcripts(args.meetingId);
+      const previous = state.trims.get(args.meetingId);
+      state.trims.set(args.meetingId, {
+        original: args.deleteOriginalNow ? null : previous?.original ?? rows,
+        originalSeconds: previous?.originalSeconds ?? previewDuration(args.meetingId),
+        trimmedAt: now(),
+        stale: true,
+      });
+      state.transcripts.set(
+        args.meetingId,
+        rows.filter((row) => row.audio_start_time < args.endSeconds).map((row) => ({ ...row, audio_end_time: Math.min(row.audio_end_time, args.endSeconds) })),
+      );
+      return handle('api_get_meeting_trim', args);
+    }
+    case 'api_restore_meeting_original': {
+      const trim = state.trims.get(args.meetingId);
+      if (!trim?.original) throw new Error('The original recording was already deleted');
+      state.transcripts.set(args.meetingId, trim.original);
+      state.trims.set(args.meetingId, { ...trim, original: null });
+      return handle('api_get_meeting_trim', args);
+    }
+    case 'api_delete_meeting_original': {
+      const trim = state.trims.get(args.meetingId);
+      if (trim) state.trims.set(args.meetingId, { ...trim, original: null });
+      return handle('api_get_meeting_trim', args);
+    }
 
     // ---- Groups ----------------------------------------------------------
     case 'api_list_groups':
@@ -840,14 +887,14 @@ function handle(cmd: string, args: Args): unknown {
       };
     }
     case 'api_create_group': {
-      const group = { id: newId('group'), name: args.name, color: args.color ?? 'blue', kind: args.kind ?? 'other', description: args.description ?? null, schedule: args.schedule ?? null, createdAt: now() };
+      const group = { id: newId('group'), name: args.name, color: args.color ?? 'blue', kind: args.kind ?? 'other', description: args.description ?? null, schedule: args.schedule ?? null, language: args.language ?? null, createdAt: now() };
       state.groups.push(group);
       return groupSummary(group);
     }
     case 'api_update_group': {
       const group = state.groups.find((entry) => entry.id === args.groupId);
       if (!group) throw new Error('Group not found');
-      Object.assign(group, { name: args.name, color: args.color, kind: args.kind, description: args.description ?? null, schedule: args.schedule ?? null });
+      Object.assign(group, { name: args.name, color: args.color, kind: args.kind, description: args.description ?? null, schedule: args.schedule ?? null, language: args.language ?? null });
       return groupSummary(group);
     }
     case 'api_delete_group':

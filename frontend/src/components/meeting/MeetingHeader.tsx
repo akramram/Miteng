@@ -16,6 +16,7 @@ import {
   FileText,
   FolderOpen,
   MoreHorizontal,
+  Scissors,
   Trash2,
   UserRound,
   Users,
@@ -69,6 +70,10 @@ export interface MeetingHeaderProps {
   onDelete: () => Promise<void>;
   /** After speakers are re-identified or the transcript is enhanced. */
   onTranscriptChanged: () => Promise<void> | void;
+  /** Opens the trim dialog; absent when the meeting has no recording. */
+  onTrim?: () => void;
+  /** A trimmed recording whose original is still kept. */
+  originalKept?: boolean;
 }
 
 export function MeetingHeader({
@@ -89,6 +94,8 @@ export function MeetingHeader({
   onOpenFolder,
   onDelete,
   onTranscriptChanged,
+  onTrim,
+  originalKept = false,
 }: MeetingHeaderProps) {
   const router = useRouter();
   const userName = useUserName();
@@ -154,6 +161,16 @@ export function MeetingHeader({
             {durationSeconds ? <span className="tabular-nums">{formatDuration(durationSeconds)}</span> : null}
             <MeetingSeriesControl meetingId={meetingId} />
             <GroupPicker value={groupId} onChange={onGroupChange} placeholder="Add to group" />
+            {originalKept && onTrim && (
+              <button
+                type="button"
+                onClick={onTrim}
+                className="inline-flex items-center gap-1 rounded-full bg-af-panel-2 px-2 py-0.5 text-[11px] text-af-text-2 transition-colors hover:bg-af-hover hover:text-af-text"
+              >
+                <Scissors className="h-3 w-3" />
+                Trimmed · original kept
+              </button>
+            )}
           </div>
           {uniquePeople.length > 0 && (
             <ul aria-label="People in this meeting" className="-ml-1 mt-2 flex flex-wrap items-center gap-0.5">
@@ -233,6 +250,12 @@ export function MeetingHeader({
                 <DropdownMenuItem onSelect={() => setEnhanceOpen(true)}>
                   <Wand2 />
                   Enhance transcript
+                </DropdownMenuItem>
+              )}
+              {onTrim && (
+                <DropdownMenuItem onSelect={onTrim}>
+                  <Scissors />
+                  Trim recording…
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />

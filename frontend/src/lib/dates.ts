@@ -95,3 +95,17 @@ export function formatClock(totalSeconds: number): string {
   const mm = String(m).padStart(h > 0 ? 2 : 1, '0');
   return h > 0 ? `${h}:${mm}:${String(s).padStart(2, '0')}` : `${mm}:${String(s).padStart(2, '0')}`;
 }
+
+/**
+ * Reads a typed position: "1:02:03", "62:03", or a bare number of minutes
+ * ("90"). Returns seconds, or null when it isn't a time.
+ */
+export function parseClock(text: string): number | null {
+  const trimmed = text.trim();
+  if (/^\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed) * 60;
+  const match = /^(?:(\d+):)?(\d{1,2}):(\d{2})$/.exec(trimmed);
+  if (!match) return null;
+  const [, h, m, s] = match;
+  if (Number(s) > 59 || (h !== undefined && Number(m) > 59)) return null;
+  return Number(h ?? 0) * 3600 + Number(m) * 60 + Number(s);
+}

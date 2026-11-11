@@ -1,12 +1,10 @@
 import React, { useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { AlertTriangle, Globe, Info, Languages, Pin, PinOff, X } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
-import type { RawModelInfo } from '@/hooks/useTranscriptionModels';
-import { canTranslate, pickTranslationModel } from '@/lib/whisper-models';
+import { useApplyTranscriptionLanguage } from '@/hooks/useApplyTranscriptionLanguage';
 
 export interface Language {
   code: string;
@@ -14,7 +12,7 @@ export interface Language {
 }
 
 // ISO 639-1 language codes supported by Whisper
-const LANGUAGES: Language[] = [
+export const LANGUAGES: Language[] = [
   { code: 'auto', name: 'Auto Detect (Original Language)' },
   { code: 'auto-translate', name: 'Auto Detect (Translate to English)' },
   { code: 'en', name: 'English' },
@@ -150,48 +148,14 @@ export function LanguageSelection({
     setPinned(next);
     localStorage.setItem(PINNED_KEY, JSON.stringify(next));
   };
-  const { setSelectedLanguage, transcriptModelConfig, setTranscriptModelConfig } = useConfig();
-
-  // Parakeet can't be pinned to a language (and lacks many, e.g. Indonesian); picking one switches live transcription to Whisper.
+  const { applyLanguage, switchWhisperModel, liveModelCannotTranslate } = useApplyTranscriptionLanguage();
+  const { transcriptModelConfig } = useConfig();
   const isParakeet = transcriptModelConfig.provider === 'parakeet';
-  const liveModelCannotTranslate = isParakeet || !canTranslate(transcriptModelConfig.model);
-
-  /**
-   * Switch live transcription to an installed Whisper model that can do the
-   * job. Returns false when none is installed.
-   */
-  const switchWhisperModel = async (forTranslation: boolean): Promise<boolean> => {
-    const models = await invoke<RawModelInfo[]>('whisper_get_available_models');
-    // `.en` models are English-only.
-    const installed = models.filter(m => m.status === 'Available' && !m.name.endsWith('.en'));
-    const model = forTranslation ? pickTranslationModel(installed.map(m => m.name)) : installed[0]?.name;
-    if (!model) return false;
-    await invoke('api_save_transcript_config', { provider: 'localWhisper', model, apiKey: null });
-    setTranscriptModelConfig(prev => ({ ...prev, provider: 'localWhisper', model, apiKey: null }));
-    toast.info(forTranslation ? 'Switched to a Whisper model that can translate' : 'Switched to Whisper for multi-language support', {
-      description: `Live model: ${model}`,
-    });
-    return true;
-  };
 
   const handleLanguageChange = async (languageCode: string) => {
     setSaving(true);
     try {
-      if (languageCode === 'auto-translate' && liveModelCannotTranslate && !(await switchWhisperModel(true))) {
-        toast.warning('Download a Whisper model that can translate', {
-          description: 'Parakeet and Whisper Large v3 Turbo only transcribe in the original language. Install Whisper Medium or Small in Settings → Speech model, then pick this option again.'
-        });
-        return;
-      }
-      if (isParakeet && languageCode !== 'auto' && languageCode !== 'auto-translate' && languageCode !== 'en'
-        && !(await switchWhisperModel(false))) {
-        toast.warning('Download a multilingual Whisper model', {
-          description: 'Parakeet can\'t transcribe a chosen language. Install Whisper Base or Small in Settings → Speech model, then pick this language again.'
-        });
-        return;
-      }
-      // Save language preference to localStorage and sync to backend
-      setSelectedLanguage(languageCode);
+      if (!(await applyLanguage(languageCode))) return;
       onLanguageChange(languageCode);
       console.log('Language preference saved:', languageCode);
 

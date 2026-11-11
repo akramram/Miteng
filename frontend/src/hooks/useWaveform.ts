@@ -17,6 +17,11 @@ function remember(path: string, peaks: number[]) {
   while (cache.size > KEEP) cache.delete(cache.keys().next().value as string);
 }
 
+/** Drop a file's peaks after the file changed on disk. */
+export function forgetWaveform(path: string) {
+  cache.delete(path);
+}
+
 export function useWaveform(path: string | null, enabled: boolean): number[] | null {
   const [peaks, setPeaks] = useState<number[] | null>(() => (path && enabled ? cache.get(path) ?? null : null));
 

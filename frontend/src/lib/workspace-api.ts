@@ -18,6 +18,8 @@ export interface GroupSummary {
   kind?: GroupKind | null;
   description?: string | null;
   schedule?: GroupSchedule | null;
+  /** Transcription language picked when the group is chosen for a recording. */
+  language?: string | null;
   meetingCount: number;
   lastMeetingAt?: string;
   lastMeetingId?: string;
@@ -51,6 +53,7 @@ export interface GroupInput {
   kind?: GroupKind | null;
   description?: string | null;
   schedule?: GroupSchedule | null;
+  language?: string | null;
 }
 
 export const GROUP_KINDS: Array<{ id: GroupKind; label: string; hint: string }> = [
@@ -77,6 +80,7 @@ export const createGroup = (input: GroupInput) =>
     kind: input.kind ?? null,
     description: input.description ?? null,
     schedule: input.schedule ?? null,
+    language: input.language ?? null,
   });
 export const updateGroup = (groupId: string, input: GroupInput) =>
   invoke<GroupSummary>('api_update_group', {
@@ -86,6 +90,7 @@ export const updateGroup = (groupId: string, input: GroupInput) =>
     kind: input.kind ?? null,
     description: input.description ?? null,
     schedule: input.schedule ?? null,
+    language: input.language ?? null,
   });
 export const deleteGroup = async (groupId: string) => {
   await invoke<void>('api_delete_group', { groupId });
@@ -244,6 +249,29 @@ export interface MeetingAudio {
 }
 
 export const getMeetingAudio = (meetingId: string) => invoke<MeetingAudio>('api_get_meeting_audio', { meetingId });
+
+export interface TrimState {
+  durationSeconds: number;
+  /** The untrimmed recording, kept until the user deletes it. */
+  original: { durationSeconds: number; trimmedAt: string } | null;
+  /** The summary was written before the last trim or restore. */
+  summaryStale: boolean;
+}
+
+export interface TrimPreview {
+  lastKept: { speaker?: string | null; text: string; startSeconds: number } | null;
+  removedLines: number;
+}
+
+export const getMeetingTrim = (meetingId: string) => invoke<TrimState>('api_get_meeting_trim', { meetingId });
+export const previewMeetingTrim = (meetingId: string, endSeconds: number) =>
+  invoke<TrimPreview>('api_preview_meeting_trim', { meetingId, endSeconds });
+export const trimMeeting = (meetingId: string, endSeconds: number, deleteOriginalNow: boolean) =>
+  invoke<TrimState>('api_trim_meeting', { meetingId, endSeconds, deleteOriginalNow });
+export const restoreMeetingOriginal = (meetingId: string) =>
+  invoke<TrimState>('api_restore_meeting_original', { meetingId });
+export const deleteMeetingOriginal = (meetingId: string) =>
+  invoke<TrimState>('api_delete_meeting_original', { meetingId });
 
 export interface AskTurn {
   question: string;

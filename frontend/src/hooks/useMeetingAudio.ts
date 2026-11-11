@@ -32,7 +32,8 @@ export const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2];
 /** Labs waveform scrubbing adds slower speeds for close listening. */
 export const SLOW_PLAYBACK_RATES = [0.5, 0.75, ...PLAYBACK_RATES];
 
-export function useMeetingAudio(meetingId: string | null | undefined): MeetingAudioControls {
+/** Bump `revision` after the file changes on disk (a trim) to load it again. */
+export function useMeetingAudio(meetingId: string | null | undefined, revision = 0): MeetingAudioControls {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const frame = useRef<number | null>(null);
   const [status, setStatus] = useState<AudioStatus>('loading');
@@ -63,7 +64,8 @@ export function useMeetingAudio(meetingId: string | null | undefined): MeetingAu
         setPath(audio.path);
         const element = new Audio();
         element.preload = 'metadata';
-        element.src = convertFileSrc(audio.path);
+        // The query only defeats the web view's cache; the asset protocol ignores it.
+        element.src = convertFileSrc(audio.path) + (revision ? `?v=${revision}` : '');
         element.onloadedmetadata = () => {
           if (cancelled) return;
           setDuration(Number.isFinite(element.duration) ? element.duration : 0);
@@ -87,7 +89,7 @@ export function useMeetingAudio(meetingId: string | null | undefined): MeetingAu
       }
       audioRef.current = null;
     };
-  }, [meetingId]);
+  }, [meetingId, revision]);
 
   // Smooth clock while playing.
   useEffect(() => {

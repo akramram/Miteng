@@ -29,6 +29,9 @@ pub struct GroupListItem {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schedule: Option<serde_json::Value>,
+    /// Transcription language code chosen with the group for a recording.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     pub meeting_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_meeting_at: Option<String>,
@@ -52,6 +55,8 @@ pub struct GroupInput {
     pub description: Option<String>,
     #[serde(default)]
     pub schedule: Option<serde_json::Value>,
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -90,6 +95,7 @@ type GroupRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
     String,
     i64,
     Option<String>,
@@ -97,7 +103,7 @@ type GroupRow = (
     Option<String>,
 );
 
-const GROUP_SELECT: &str = "SELECT g.id, g.name, g.color, g.kind, g.description, g.schedule, g.created_at, \
+const GROUP_SELECT: &str = "SELECT g.id, g.name, g.color, g.kind, g.description, g.schedule, g.language, g.created_at, \
         (SELECT COUNT(*) FROM meetings m WHERE m.group_id = g.id), \
         (SELECT m.created_at FROM meetings m WHERE m.group_id = g.id ORDER BY m.created_at DESC LIMIT 1), \
         (SELECT m.id FROM meetings m WHERE m.group_id = g.id ORDER BY m.created_at DESC LIMIT 1), \
@@ -112,6 +118,7 @@ fn group_from_row(row: GroupRow) -> GroupListItem {
         kind,
         description,
         schedule,
+        language,
         created_at,
         meeting_count,
         last_meeting_at,
@@ -125,6 +132,7 @@ fn group_from_row(row: GroupRow) -> GroupListItem {
         kind,
         description,
         schedule: schedule.and_then(|raw| serde_json::from_str(&raw).ok()),
+        language,
         meeting_count,
         last_meeting_at,
         last_meeting_id,
@@ -147,6 +155,7 @@ struct CleanGroupInput {
     kind: String,
     description: Option<String>,
     schedule: Option<String>,
+    language: Option<String>,
 }
 
 fn validate_input(input: GroupInput) -> Result<CleanGroupInput, sqlx::Error> {
@@ -166,6 +175,10 @@ fn validate_input(input: GroupInput) -> Result<CleanGroupInput, sqlx::Error> {
         Some(serde_json::Value::Null) | None => None,
         Some(value) => Some(value.to_string()),
     };
+    // A short code like "id" or "auto"; anything else is not a language.
+    let language = clean_text(input.language).filter(|code| {
+        code.len() <= 16 && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    });
     Ok(CleanGroupInput {
         normalized: normalize_person_name(&name),
         name,
@@ -173,6 +186,7 @@ fn validate_input(input: GroupInput) -> Result<CleanGroupInput, sqlx::Error> {
         kind,
         description: clean_text(input.description),
         schedule,
+        language,
     })
 }
 
@@ -212,8 +226,8 @@ impl GroupsRepository {
         }
         let id = format!("group-{}", Uuid::new_v4());
         sqlx::query(
-            "INSERT INTO groups (id, name, normalized_name, color, kind, description, schedule, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+            "INSERT INTO groups (id, name, normalized_name, color, kind, description, schedule, language, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
         )
         .bind(&id)
         .bind(&input.name)
@@ -222,6 +236,7 @@ impl GroupsRepository {
         .bind(&input.kind)
         .bind(&input.description)
         .bind(&input.schedule)
+        .bind(&input.language)
         .execute(pool)
         .await?;
         Self::get(pool, &id).await
@@ -248,7 +263,7 @@ impl GroupsRepository {
         }
         let result = sqlx::query(
             "UPDATE groups SET name = ?, normalized_name = ?, color = ?, kind = ?, description = ?, \
-             schedule = ?, updated_at = datetime('now') WHERE id = ?",
+             schedule = ?, language = ?, updated_at = datetime('now') WHERE id = ?",
         )
         .bind(&input.name)
         .bind(&input.normalized)
@@ -256,6 +271,7 @@ impl GroupsRepository {
         .bind(&input.kind)
         .bind(&input.description)
         .bind(&input.schedule)
+        .bind(&input.language)
         .bind(group_id)
         .execute(pool)
         .await?;
@@ -482,6 +498,7 @@ pub async fn api_create_group(
     kind: Option<String>,
     description: Option<String>,
     schedule: Option<serde_json::Value>,
+    language: Option<String>,
 ) -> Result<GroupListItem, String> {
     GroupsRepository::create(
         state.db_manager.pool(),
@@ -491,6 +508,7 @@ pub async fn api_create_group(
             kind,
             description,
             schedule,
+            language,
         },
     )
     .await
@@ -506,6 +524,7 @@ pub async fn api_update_group(
     kind: Option<String>,
     description: Option<String>,
     schedule: Option<serde_json::Value>,
+    language: Option<String>,
 ) -> Result<GroupListItem, String> {
     GroupsRepository::update(
         state.db_manager.pool(),
@@ -516,6 +535,7 @@ pub async fn api_update_group(
             kind,
             description,
             schedule,
+            language,
         },
     )
     .await
