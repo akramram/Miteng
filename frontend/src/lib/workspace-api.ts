@@ -278,8 +278,26 @@ export interface AskTurn {
   answer: string;
 }
 
-export const askMeeting = (meetingId: string, question: string, history: AskTurn[] = []) =>
-  invoke<string>('api_ask_meeting', { meetingId, question, history });
+/** `chapterId` limits the answer to one topic of the meeting. */
+export const askMeeting = (meetingId: string, question: string, history: AskTurn[] = [], chapterId: string | null = null) =>
+  invoke<string>('api_ask_meeting', { meetingId, question, history, chapterId });
+
+// ---- Topics (chapters) ------------------------------------------------------------
+
+/** A time range of the recording summarized on its own. */
+export interface Chapter {
+  id: string;
+  title: string;
+  startSeconds: number;
+  endSeconds: number;
+}
+
+export type ChapterDraft = Omit<Chapter, 'id'> & { id?: string };
+
+export const listMeetingChapters = (meetingId: string) => invoke<Chapter[]>('api_list_meeting_chapters', { meetingId });
+/** Replaces the meeting's topics; an empty list removes them. */
+export const saveMeetingChapters = (meetingId: string, chapters: ChapterDraft[]) =>
+  invoke<Chapter[]>('api_save_meeting_chapters', { meetingId, chapters });
 
 // ---- Cross-view refresh ---------------------------------------------------------
 

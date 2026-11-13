@@ -796,6 +796,8 @@ pub fn run() {
             database::repositories::group::api_update_group,
             database::repositories::group::api_delete_group,
             database::repositories::group::api_get_group,
+            database::repositories::chapter::api_list_meeting_chapters,
+            database::repositories::chapter::api_save_meeting_chapters,
             database::repositories::group::api_set_meeting_group,
             database::repositories::group::api_set_meetings_group,
             database::repositories::group::api_get_meeting_group,

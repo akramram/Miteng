@@ -18,6 +18,12 @@ import {
   readCachedDetectedSummaryLanguage,
 } from '@/lib/summary-language-preferences';
 import { CUSTOM_PROVIDER, customModelLabel, listCustomProviders, providerDisplayName } from '@/lib/custom-providers';
+import { listMeetingChapters, type Chapter } from '@/lib/workspace-api';
+
+/** One topic and its transcript, as `api_process_transcript` takes it. */
+interface ChapterText extends Chapter {
+  text: string;
+}
 
 /**
  * The Claude Code CLI provider depends on software outside this app, so it can
@@ -288,12 +294,18 @@ export function useSummaryGeneration({
   const processSummary = useCallback(async ({
     transcriptText,
     transcriptTexts,
+    chapters,
+    regenerateChapterId,
     customPrompt = '',
     isRegeneration = false,
     requestGeneration: providedRequestGeneration,
   }: {
     transcriptText: string;
     transcriptTexts?: string[];
+    /** Summarize each topic on its own; the meeting's summary is their sections. */
+    chapters?: ChapterText[];
+    /** Write only this topic again and keep the others' summaries. */
+    regenerateChapterId?: string | null;
     customPrompt?: string;
     isRegeneration?: boolean;
     requestGeneration?: number;
@@ -364,6 +376,8 @@ export function useSummaryGeneration({
         customPrompt: customPrompt,
         templateId: selectedTemplate,
         summaryLanguage,
+        chapters: chapters?.length ? chapters : null,
+        regenerateChapterId: chapters?.length ? regenerateChapterId ?? null : null,
       }) as { process_id?: unknown };
 
       const process_id = result.process_id;
@@ -650,7 +664,20 @@ export function useSummaryGeneration({
     }
   }, []);
 
-  const buildSummaryTranscriptPayload = useCallback((allTranscripts: Transcript[]) => {
+  /** The meeting's topics; null (after reporting why) when they can't be read. */
+  const loadChapters = useCallback(async (meetingId: string): Promise<Chapter[] | null> => {
+    try {
+      return await listMeetingChapters(meetingId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSummaryStatus('error');
+      setSummaryError(message);
+      toast.error('Could not load the topics of this meeting', { description: message });
+      return null;
+    }
+  }, []);
+
+  const buildSummaryTranscriptPayload = useCallback((allTranscripts: Transcript[], chapters: Chapter[] = []) => {
     const formatTime = (seconds: number | undefined, fallbackTimestamp: string): string => {
       if (seconds === undefined) {
         return fallbackTimestamp;
@@ -663,14 +690,30 @@ export function useSummaryGeneration({
 
     const clean = cleanTextRef.current;
     const textOf = (t: Transcript) => (clean ? clean(t.text) || t.text : t.text);
+    const lineOf = (t: Transcript) => {
+      const speaker = t.speaker ? `${t.speaker}: ` : '';
+      return `${formatTime(t.audio_start_time, t.timestamp)} ${speaker}${textOf(t)}`;
+    };
+    if (chapters.length === 0) {
+      return {
+        transcriptText: allTranscripts.map(lineOf).join('\n'),
+        transcriptTexts: allTranscripts.map(textOf),
+      };
+    }
+    // Lines outside every topic are skipped.
+    const linesPerChapter = chapters.map((chapter) =>
+      allTranscripts.filter(
+        (t) => t.audio_start_time !== undefined && t.audio_start_time >= chapter.startSeconds && t.audio_start_time < chapter.endSeconds,
+      ),
+    );
+    const chapterTexts: ChapterText[] = chapters.map((chapter, index) => ({ ...chapter, text: linesPerChapter[index].map(lineOf).join('\n') }));
     return {
-      transcriptText: allTranscripts
-        .map(t => {
-          const speaker = t.speaker ? `${t.speaker}: ` : '';
-          return `${formatTime(t.audio_start_time, t.timestamp)} ${speaker}${textOf(t)}`;
-        })
-        .join('\n'),
-      transcriptTexts: allTranscripts.map(textOf),
+      // The whole text names every topic, so changing a topic changes the summary's cache key.
+      transcriptText: chapterTexts
+        .map((c) => `=== ${c.title} (${formatTime(c.startSeconds, '')}–${formatTime(c.endSeconds, '')}) ===\n${c.text}`)
+        .join('\n\n'),
+      transcriptTexts: linesPerChapter.flat().map(textOf),
+      chapters: chapterTexts,
     };
   }, []);
 
@@ -914,18 +957,20 @@ export function useSummaryGeneration({
       }
     }
 
-    const summaryPayload = buildSummaryTranscriptPayload(allTranscripts);
-    if (!isCurrentRequest()) return false;
+    const chapters = await loadChapters(meeting.id);
+    if (!isCurrentRequest() || !chapters) return false;
+    const summaryPayload = buildSummaryTranscriptPayload(allTranscripts, chapters);
 
     return processSummary({
       ...summaryPayload,
       customPrompt,
       requestGeneration,
     });
-  }, [meeting.id, fetchAllTranscripts, buildSummaryTranscriptPayload, processSummary, modelConfig, isModelConfigLoading, selectedTemplate, onOpenModelSettings]);
+  }, [meeting.id, fetchAllTranscripts, loadChapters, buildSummaryTranscriptPayload, processSummary, modelConfig, isModelConfigLoading, selectedTemplate, onOpenModelSettings]);
 
-  // Public API: Regenerate summary from the current saved transcript
-  const handleRegenerateSummary = useCallback(async (customPrompt = '') => {
+  // Public API: Regenerate summary from the current saved transcript. With
+  // `chapterId`, only that topic is written again.
+  const handleRegenerateSummary = useCallback(async (customPrompt = '', chapterId: string | null = null) => {
     const requestMeetingId = meeting.id;
     const requestGeneration = ++summaryRequestGenerationRef.current;
     const isCurrentRequest = () =>
@@ -995,13 +1040,17 @@ export function useSummaryGeneration({
       }
     }
 
+    const chapters = await loadChapters(meeting.id);
+    if (!isCurrentRequest() || !chapters) return;
+
     await processSummary({
-      ...buildSummaryTranscriptPayload(allTranscripts),
+      ...buildSummaryTranscriptPayload(allTranscripts, chapters),
+      regenerateChapterId: chapterId,
       customPrompt,
       isRegeneration: true,
       requestGeneration,
     });
-  }, [meeting.id, fetchAllTranscripts, buildSummaryTranscriptPayload, processSummary, modelConfig, onOpenModelSettings]);
+  }, [meeting.id, fetchAllTranscripts, loadChapters, buildSummaryTranscriptPayload, processSummary, modelConfig, onOpenModelSettings]);
 
   // Public API: Stop ongoing summary generation
   const handleStopGeneration = useCallback(async () => {

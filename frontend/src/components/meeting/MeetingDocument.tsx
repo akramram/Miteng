@@ -46,6 +46,7 @@ import {
   onWorkspaceChange,
   saveMeetingNotes,
   type ActionItem,
+  type Chapter,
 } from '@/lib/workspace-api';
 import { syncMeetingActionItems, type TranscriptLine } from '@/lib/action-item-sync';
 import { extractActionItems } from '@/lib/action-items';
@@ -67,7 +68,8 @@ export interface MeetingDocumentProps {
   summaryError: string | null;
   statusMessage: (status: SummaryStatus) => string;
   onGenerate: () => void;
-  onRegenerate: (instructions: string) => Promise<void>;
+  /** `chapterId` writes only that topic again. */
+  onRegenerate: (instructions: string, chapterId: string | null) => Promise<void>;
   onStop: () => void;
   hasTranscript: boolean;
   transcript: TranscriptLine[];
@@ -84,7 +86,12 @@ export interface MeetingDocumentProps {
   onRegenerateRequestHandled: () => void;
   /** The recording was trimmed or restored after this summary was written. */
   summaryStale?: boolean;
+  /** The meeting's topics; empty when it is summarized as a whole. */
+  chapters: Chapter[];
 }
+
+/** Select value for "every topic"; Radix items can't be empty. */
+const ALL_TOPICS = 'all';
 
 const SUGGESTIONS = ['Focus on decisions and owners', 'Keep it to five bullets', 'Highlight open questions', 'Use a more formal tone'];
 
@@ -108,6 +115,8 @@ function SaveIndicator({ state }: { state: SaveState }) {
 
 export function MeetingDocument(props: MeetingDocumentProps) {
   const [tab, setTab] = useState<'notes' | 'ask'>('notes');
+  const [askTopic, setAskTopic] = useState(ALL_TOPICS);
+  const topic = props.chapters.find((chapter) => chapter.id === askTopic) ?? null;
   return (
     <Tabs value={tab} onValueChange={(value) => setTab(value as 'notes' | 'ask')} className="flex h-full min-h-0 flex-col">
       <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-af-border px-4">
@@ -121,19 +130,43 @@ export function MeetingDocument(props: MeetingDocumentProps) {
             Ask AI
           </TabsTrigger>
         </TabsList>
-        {tab === 'ask' && <AskModelSwitcher summaryConfig={props.modelConfig} />}
+        {tab === 'ask' && (
+          <div className="flex items-center gap-1.5">
+            {props.chapters.length > 0 && (
+              <Select value={topic ? askTopic : ALL_TOPICS} onValueChange={setAskTopic}>
+                <SelectTrigger className="h-7 max-w-[11rem] text-xs" aria-label="What to ask about">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_TOPICS}>Whole meeting</SelectItem>
+                  {props.chapters.map((chapter) => (
+                    <SelectItem key={chapter.id} value={chapter.id}>
+                      {chapter.title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            <AskModelSwitcher summaryConfig={props.modelConfig} />
+          </div>
+        )}
       </div>
       <TabsContent value="notes" className="mt-0 min-h-0 flex-1 data-[state=active]:flex data-[state=inactive]:hidden" forceMount>
         <NotesTab {...props} />
       </TabsContent>
       <TabsContent value="ask" className="mt-0 min-h-0 flex-1 data-[state=inactive]:hidden" forceMount>
         <ChatThread
-          historyKey={`meeting:${props.meetingId}`}
-          ask={(question, history) => askMeeting(props.meetingId, question, history)}
-          suggestions={['What was decided?', 'Who owns what?', 'What questions are still open?', 'Summarize the last ten minutes']}
-          placeholder="Ask about this meeting…"
-          emptyTitle="Ask about this meeting"
-          emptyHint="Answers use the whole transcript, your notes, the summary, and the action items, with links to the moment."
+          key={topic?.id ?? ALL_TOPICS}
+          historyKey={topic ? `meeting:${props.meetingId}:${topic.id}` : `meeting:${props.meetingId}`}
+          ask={(question, history) => askMeeting(props.meetingId, question, history, topic?.id ?? null)}
+          suggestions={['What was decided?', 'Who owns what?', 'What questions are still open?', topic ? 'Summarize this topic' : 'Summarize the last ten minutes']}
+          placeholder={topic ? `Ask about "${topic.title}"…` : 'Ask about this meeting…'}
+          emptyTitle={topic ? `Ask about "${topic.title}"` : 'Ask about this meeting'}
+          emptyHint={
+            topic
+              ? 'Answers use only this topic’s part of the transcript and its summary, with links to the moment.'
+              : 'Answers use the whole transcript, your notes, the summary, and the action items, with links to the moment.'
+          }
           footnote="Cloud providers receive the parts of this meeting needed to answer."
           onSeek={props.onSeek}
         />
@@ -166,6 +199,7 @@ function NotesTab({
   regenerateRequest,
   onRegenerateRequestHandled,
   summaryStale = false,
+  chapters,
 }: MeetingDocumentProps) {
   // ---- Notes ---------------------------------------------------------------
   const [notes, setNotes] = useState<{ loaded: boolean; json: unknown[] | null; markdown: string | null }>({
@@ -294,6 +328,8 @@ function NotesTab({
   // ---- Regenerate ------------------------------------------------------------
   const [regenerateOpen, setRegenerateOpen] = useState(false);
   const [instructions, setInstructions] = useState('');
+  const [regenerateTopic, setRegenerateTopic] = useState(ALL_TOPICS);
+  const onlyTopic = chapters.find((chapter) => chapter.id === regenerateTopic) ?? null;
   const [regenerating, setRegenerating] = useState(false);
   const [regenerateReason, setRegenerateReason] = useState<string | undefined>();
   useEffect(() => {
@@ -308,7 +344,7 @@ function NotesTab({
     setRegenerating(true);
     try {
       await summarySaver.flush();
-      await onRegenerate(instructions.trim());
+      await onRegenerate(instructions.trim(), onlyTopic?.id ?? null);
       setUserEdited(false);
       setRegenerateOpen(false);
     } finally {
@@ -552,6 +588,26 @@ function NotesTab({
               <span>
                 You edited this summary. Regenerating replaces those edits. <strong className="text-af-text">Your notes and action items are kept.</strong>
               </span>
+            </div>
+          )}
+          {chapters.length > 0 && (
+            <div className="space-y-1">
+              <span id="regenerate-topic-label" className="text-[11px] text-af-text-3">
+                Topics to write again
+              </span>
+              <Select value={onlyTopic ? regenerateTopic : ALL_TOPICS} onValueChange={setRegenerateTopic}>
+                <SelectTrigger className="h-8 text-xs" aria-labelledby="regenerate-topic-label">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_TOPICS}>All {chapters.length} topics</SelectItem>
+                  {chapters.map((chapter) => (
+                    <SelectItem key={chapter.id} value={chapter.id}>
+                      Only “{chapter.title}”
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           )}
           <Textarea

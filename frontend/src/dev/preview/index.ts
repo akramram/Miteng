@@ -44,6 +44,7 @@ const state = {
   actionItems: [] as ActionItemRow[],
   actionSynced: new Set<string>(),
   transcripts: new Map<string, fx.PreviewTranscript[]>(),
+  chapters: new Map<string, Array<{ id: string; title: string; startSeconds: number; endSeconds: number }>>(),
   // Trimmed meetings: the untrimmed transcript and length, until deleted.
   trims: new Map<string, { original: fx.PreviewTranscript[] | null; originalSeconds: number; trimmedAt: string; stale: boolean }>(),
   diarization: {
@@ -1103,6 +1104,27 @@ function handle(cmd: string, args: Args): unknown {
       return new Promise((resolve) =>
         setTimeout(() => resolve('This is a preview answer. In the app, your configured model answers from the meeting records, with citations.'), 700),
       );
+    case 'api_list_meeting_chapters':
+      return state.chapters.get(args.meetingId) ?? [];
+    case 'api_save_meeting_chapters': {
+      const saved = ((args.chapters ?? []) as Array<Record<string, any>>)
+        .map((chapter) => ({ id: chapter.id ?? newId('chapter'), title: String(chapter.title).trim(), startSeconds: chapter.startSeconds, endSeconds: chapter.endSeconds }))
+        .sort((a, b) => a.startSeconds - b.startSeconds);
+      state.chapters.set(args.meetingId, saved);
+      return saved;
+    }
+    case 'api_process_transcript': {
+      // A stand-in summary: one section per topic, or the whole meeting.
+      const topics = (args.chapters ?? []) as Array<{ title: string; startSeconds: number; endSeconds: number; text: string }>;
+      const clockOf = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+      const markdown = topics.length
+        ? topics
+            .map((topic) => `## ${topic.title} · ${clockOf(topic.startSeconds)}–${clockOf(topic.endSeconds)}\n\n- Preview summary of ${topic.text.split('\n').filter(Boolean).length} lines.`)
+            .join('\n\n')
+        : `## Summary\n\n- Preview summary of the whole meeting.`;
+      state.summaries.set(args.meetingId, markdown);
+      return { message: 'Summary generation started', process_id: newId('process') };
+    }
     default:
       return null;
   }

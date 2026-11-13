@@ -10,7 +10,7 @@ use crate::summary::metadata::{
 use crate::summary::language_detection::{
     detect_summary_language, SummaryLanguageDetection,
 };
-use crate::summary::service::SummaryService;
+use crate::summary::service::{ChapterText, SummaryService};
 use log::{error as log_error, info as log_info, warn as log_warn};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -354,6 +354,8 @@ pub async fn api_process_transcript<R: Runtime>(
     template_id: Option<String>,
     summary_language: Option<String>,
     custom_provider_id: Option<String>,
+    chapters: Option<Vec<ChapterText>>,
+    regenerate_chapter_id: Option<String>,
     _auth_token: Option<String>,
 ) -> Result<ProcessTranscriptResponse, String> {
     use uuid::Uuid;
@@ -434,6 +436,8 @@ pub async fn api_process_transcript<R: Runtime>(
             final_template_id,
             summary_language,
             custom_provider_id,
+            chapters.unwrap_or_default(),
+            regenerate_chapter_id,
         )
         .await;
     });

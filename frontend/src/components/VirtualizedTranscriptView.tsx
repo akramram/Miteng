@@ -20,7 +20,7 @@
 import { memo, startTransition, useEffect, useMemo, useReducer, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { motion } from 'framer-motion';
-import { GitMerge, Mic } from 'lucide-react';
+import { GitMerge, Mic, Milestone } from 'lucide-react';
 import { useAutoScroll } from '@/hooks/useAutoScroll';
 import { useTranscriptStreaming } from '@/hooks/useTranscriptStreaming';
 import { useUserName } from '@/hooks/useUserName';
@@ -29,6 +29,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { cleanTranscriptText } from '@/lib/labs';
 import { displaySpeaker, isUserSpeaker, speakerColor, speakerColorIndexMap, speakerColorValue, speakerDot, speakerKey } from '@/utils/speakerUtils';
+import type { Chapter } from '@/lib/workspace-api';
 
 /**
  * How line text is shown. `tidy` drops filler words (the default); with Labs
@@ -76,6 +77,8 @@ export interface VirtualizedTranscriptViewProps {
   textMode?: TranscriptTextMode;
   /** Colour slot per speaker key (speakerColorIndexMap). Worked out from the lines when not given. */
   colorIndices?: Map<string, number>;
+  /** Topics of the meeting: a heading opens each, and lines outside every topic are dimmed. */
+  chapters?: Chapter[];
 }
 
 const VIRTUALIZATION_THRESHOLD = 10;
@@ -104,14 +107,18 @@ function shownText(text: string, mode: TranscriptTextMode): string {
   return mode === 'clean' ? cleanTranscriptText(text) : cleanFillers(text);
 }
 
-/** One turn per speaker run, joining fragments less than 2.5s apart. */
-function mergeTurns(segments: TranscriptSegmentData[], maxGapSecs = 2.5): Turn[] {
+/**
+ * One turn per speaker run, joining fragments less than 2.5s apart. A topic
+ * boundary between two fragments keeps them apart.
+ */
+function mergeTurns(segments: TranscriptSegmentData[], boundaries: number[] = [], maxGapSecs = 2.5): Turn[] {
   const out: Turn[] = [];
   for (const segment of segments) {
     const last = out[out.length - 1];
     const lastEnd = last?.endTime ?? last?.timestamp ?? 0;
     const gap = segment.timestamp - lastEnd;
-    if (last && speakerKey(last.speaker) === speakerKey(segment.speaker) && gap >= 0 && gap <= maxGapSecs) {
+    const crossesBoundary = !!last && boundaries.some((boundary) => last.timestamp < boundary && boundary <= segment.timestamp);
+    if (last && !crossesBoundary && speakerKey(last.speaker) === speakerKey(segment.speaker) && gap >= 0 && gap <= maxGapSecs) {
       last.text = `${last.text.trim()} ${segment.text.trim()}`.replace(/\s+/g, ' ').trim();
       last.endTime = segment.endTime ?? segment.timestamp;
       last.memberIds.push(segment.id);
@@ -267,9 +274,22 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
   bottomInset = 0,
   textMode = 'tidy',
   colorIndices: givenColorIndices,
+  chapters,
 }) => {
   const userName = useUserName();
-  const turns = useMemo(() => mergeTurns(segments), [segments]);
+  const turns = useMemo(
+    () => mergeTurns(segments, chapters?.flatMap((chapter) => [chapter.startSeconds, chapter.endSeconds])),
+    [segments, chapters],
+  );
+  // The topic of each turn, and whether a heading opens it.
+  const sections = useMemo(() => {
+    if (!chapters?.length) return null;
+    return turns.map((turn, index) => {
+      const chapter = chapters.find((c) => turn.timestamp >= c.startSeconds && turn.timestamp < c.endSeconds) ?? null;
+      const previous = index > 0 ? chapters.find((c) => turns[index - 1].timestamp >= c.startSeconds && turns[index - 1].timestamp < c.endSeconds) ?? null : undefined;
+      return { chapter, opens: previous === undefined || previous !== chapter };
+    });
+  }, [turns, chapters]);
   // One colour per speaker in first-spoken order, so a renamed speaker keeps theirs.
   const ownColorIndices = useMemo(
     () => speakerColorIndexMap(turns.map((turn) => turn.speaker ?? '').filter(Boolean)),
@@ -375,22 +395,45 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     return () => element.removeEventListener('scroll', onScroll);
   }, [onLoadMore, hasMore, isLoadingMore, isRecording]);
 
-  const row = (turn: Turn, index: number) => (
-    <TurnRow
-      turn={turn}
-      text={getDisplayText(turn)}
-      textMode={textMode}
-      colorIndex={turn.speaker ? colorIndices.get(speakerKey(turn.speaker)) : undefined}
-      isStreaming={streamingSegmentId === turn.id}
-      userName={userName}
-      active={index === activeIndex}
-      flash={index === flashIndex}
-      onSpeakerClick={onSpeakerClick}
-      onRenameSpeaker={onRenameSpeaker}
-      onMergeSpeaker={onMergeSpeaker}
-      onSeek={onSeek}
-    />
-  );
+  const row = (turn: Turn, index: number) => {
+    const section = sections?.[index];
+    return (
+      <>
+        {section?.opens && (
+          <div className="mb-3 mt-4 flex items-center gap-2 text-xs font-semibold text-af-text-2 first:mt-0">
+            {section.chapter ? (
+              <>
+                <Milestone className="h-3.5 w-3.5 text-af-accent" />
+                <span className="truncate">{section.chapter.title}</span>
+                <span className="shrink-0 font-normal tabular-nums text-af-text-4">
+                  {clock(section.chapter.startSeconds)}–{clock(section.chapter.endSeconds)}
+                </span>
+              </>
+            ) : (
+              <span className="font-normal text-af-text-4">Skipped · not in the summary</span>
+            )}
+            <span aria-hidden className="h-px flex-1 bg-af-border" />
+          </div>
+        )}
+        <div className={cn(section && !section.chapter && 'opacity-50')}>
+          <TurnRow
+            turn={turn}
+            text={getDisplayText(turn)}
+            textMode={textMode}
+            colorIndex={turn.speaker ? colorIndices.get(speakerKey(turn.speaker)) : undefined}
+            isStreaming={streamingSegmentId === turn.id}
+            userName={userName}
+            active={index === activeIndex}
+            flash={index === flashIndex}
+            onSpeakerClick={onSpeakerClick}
+            onRenameSpeaker={onRenameSpeaker}
+            onMergeSpeaker={onMergeSpeaker}
+            onSeek={onSeek}
+          />
+        </div>
+      </>
+    );
+  };
 
   const footer = (
     <>

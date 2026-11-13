@@ -276,6 +276,19 @@ fn clock(seconds: f64) -> String {
     }
 }
 
+/// The summary section of one topic in a meeting split into topics.
+fn chapter_summary_text(raw: &str, chapter_id: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    value
+        .get("chapters")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("id").and_then(|id| id.as_str()) == Some(chapter_id))?
+        .get("markdown")?
+        .as_str()
+        .map(str::to_string)
+}
+
 fn render_line(line: &MeetingLine) -> String {
     let stamp = line.start.map(|s| format!("[{}] ", clock(s))).unwrap_or_default();
     let speaker = line.speaker.as_deref().unwrap_or("Unknown");
@@ -371,6 +384,7 @@ pub async fn api_ask_meeting<R: Runtime>(
     meeting_id: String,
     question: String,
     history: Option<Vec<AskTurn>>,
+    chapter_id: Option<String>,
 ) -> Result<String, String> {
     let question = truncate_chars(question.trim(), 1_000);
     if question.is_empty() {
@@ -396,6 +410,23 @@ pub async fn api_ask_meeting<R: Runtime>(
     .into_iter()
     .map(|(text, speaker, start)| MeetingLine { speaker, text, start })
     .collect();
+    // A topic narrows the transcript to its time range and the summary to its section.
+    let chapter = match chapter_id.as_deref() {
+        Some(id) => Some(
+            crate::database::repositories::chapter::ChaptersRepository::get(pool, &meeting_id, id)
+                .await
+                .map_err(|e| format!("Failed to load the topic: {}", e))?
+                .ok_or_else(|| "This topic no longer exists".to_string())?,
+        ),
+        None => None,
+    };
+    let lines: Vec<MeetingLine> = match &chapter {
+        Some(chapter) => lines
+            .into_iter()
+            .filter(|line| line.start.is_some_and(|start| start >= chapter.start_seconds && start < chapter.end_seconds))
+            .collect(),
+        None => lines,
+    };
 
     let summary: Option<String> =
         sqlx::query_scalar::<_, Option<String>>("SELECT result FROM summary_processes WHERE meeting_id = ?")
@@ -404,7 +435,10 @@ pub async fn api_ask_meeting<R: Runtime>(
             .await
             .map_err(|e| format!("Failed to load summary: {}", e))?
             .flatten()
-            .and_then(|raw| crate::database::repositories::person::visible_summary_text(&raw));
+            .and_then(|raw| match &chapter {
+                Some(chapter) => chapter_summary_text(&raw, &chapter.id),
+                None => crate::database::repositories::person::visible_summary_text(&raw),
+            });
     let notes: Option<String> =
         sqlx::query_scalar::<_, Option<String>>("SELECT notes_markdown FROM meeting_notes WHERE meeting_id = ?")
             .bind(&meeting_id)
@@ -421,6 +455,14 @@ pub async fn api_ask_meeting<R: Runtime>(
     .map_err(|e| format!("Failed to load action items: {}", e))?;
 
     let mut context = format!("MEETING: {} ({})\n", title, created_at);
+    if let Some(chapter) = &chapter {
+        context.push_str(&format!(
+            "FOCUS: only the topic \"{}\", from [{}] to [{}]. The transcript below covers just that part.\n",
+            chapter.title,
+            clock(chapter.start_seconds),
+            clock(chapter.end_seconds)
+        ));
+    }
     if let Some(notes) = notes.filter(|n| !n.trim().is_empty()) {
         context.push_str(&format!("\nUSER NOTES:\n{}\n", truncate_chars(notes.trim(), MEETING_NOTES_CHARS)));
     }

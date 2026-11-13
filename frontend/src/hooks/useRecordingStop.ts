@@ -13,7 +13,8 @@ import {
   applyPinnedSummaryLanguageToMeeting,
   detectAndCacheSummaryLanguage,
 } from '@/lib/summary-language-preferences';
-import { endLiveSession, finalLiveTitle, readLiveNotes, writeLiveTitle } from '@/lib/live-session';
+import { endLiveSession, finalLiveTitle, readLiveNotes, readLiveTitle, writeLiveTitle } from '@/lib/live-session';
+import { readLiveMarkers, writeLiveMarkers, writeTopicDraft } from '@/lib/topic-markers';
 import { announceChange, saveMeetingNotes } from '@/lib/workspace-api';
 import { readPendingContinuation, setPreviousMeeting, writePendingContinuation } from '@/lib/meeting-series';
 import { endAutomatedRecording } from '@/lib/meeting-automation';
@@ -292,6 +293,9 @@ export function useRecordingStop(
             // contact list is loaded once, so tell every screen to reload it.
             announceChange('people');
             announceChange('meetings', { meetingId });
+            // Topic changes marked during the call wait on the meeting page for review.
+            writeTopicDraft(meetingId, readLiveMarkers(String(readLiveTitle()?.startedAt ?? 'current')));
+            writeLiveMarkers('', null);
             try {
               const { readPendingGroup, writePendingGroup } = await import('@/lib/groups');
               const pending = readPendingGroup();

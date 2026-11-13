@@ -219,6 +219,161 @@ fn extract_cached_english_markdown(
     }
 }
 
+/// Per-topic results inside `summary_processes.result`, so one topic can be
+/// regenerated without the others.
+const CHAPTERS_FIELD: &str = "chapters";
+const NO_TRANSCRIPT_IN_CHAPTER: &str = "_Nothing was transcribed in this part._";
+
+/// One topic of a meeting, with its transcript as the frontend formats it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterText {
+    pub id: String,
+    pub title: String,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub text: String,
+}
+
+struct ChapterSummary<'a> {
+    chapter: &'a ChapterText,
+    markdown: String,
+    english: String,
+    source: SummaryCacheSource,
+}
+
+/// Everything one summary call needs besides the text and the prompt.
+struct SummaryRun<'a> {
+    client: &'a reqwest::Client,
+    provider: &'a LLMProvider,
+    model_name: &'a str,
+    api_key: &'a str,
+    template_id: &'a str,
+    template: &'a Template,
+    token_threshold: usize,
+    ollama_endpoint: Option<&'a str>,
+    custom_openai_endpoint: Option<&'a str>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+    app_data_dir: Option<&'a std::path::PathBuf>,
+    claude_cli_path: Option<&'a str>,
+    cancellation_token: &'a CancellationToken,
+    summary_language: Option<&'a str>,
+    detected_language: Option<&'a str>,
+}
+
+impl SummaryRun<'_> {
+    async fn summarize(&self, text: &str, prompt: &str, cached_english: Option<&str>) -> Result<(String, String, i64), String> {
+        generate_meeting_summary(
+            self.client,
+            self.provider,
+            self.model_name,
+            self.api_key,
+            text,
+            prompt,
+            self.template_id,
+            self.template,
+            self.token_threshold,
+            self.ollama_endpoint,
+            self.custom_openai_endpoint,
+            self.max_tokens,
+            self.temperature,
+            self.top_p,
+            self.app_data_dir,
+            self.claude_cli_path,
+            Some(self.cancellation_token),
+            self.summary_language,
+            self.detected_language,
+            cached_english,
+        )
+        .await
+    }
+}
+
+/// "4:05", "1:02:03".
+fn clock(seconds: f64) -> String {
+    let total = seconds.max(0.0).round() as u64;
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+fn chapter_prompt(custom_prompt: &str, chapter: &ChapterText) -> String {
+    let mut prompt = format!(
+        "This transcript is one topic of a longer meeting: \"{}\" ({}–{}). Summarize only this part.",
+        chapter.title,
+        clock(chapter.start_seconds),
+        clock(chapter.end_seconds)
+    );
+    if !custom_prompt.trim().is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(custom_prompt);
+    }
+    prompt
+}
+
+/// Moves every heading one level down (outside code blocks), so a topic's own
+/// sections sit under the topic's heading.
+fn demote_headings(markdown: &str) -> String {
+    let mut in_fence = false;
+    markdown
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_fence = !in_fence;
+                return line.to_string();
+            }
+            let level = trimmed.chars().take_while(|c| *c == '#').count();
+            let is_heading = (1..6).contains(&level) && trimmed[level..].starts_with(' ');
+            if !in_fence && is_heading { format!("#{trimmed}") } else { line.to_string() }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One `## Topic · 0:00–12:30` section per topic, in order.
+fn compose_chapters<'a>(parts: impl Iterator<Item = (&'a ChapterText, &'a str)>) -> String {
+    parts
+        .map(|(chapter, markdown)| {
+            format!(
+                "## {} · {}–{}\n\n{}",
+                chapter.title,
+                clock(chapter.start_seconds),
+                clock(chapter.end_seconds),
+                demote_headings(markdown.trim())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn chapter_result_json(part: ChapterSummary<'_>, output_language: Option<&str>) -> serde_json::Value {
+    serde_json::json!({
+        "id": part.chapter.id,
+        "title": part.chapter.title,
+        "startSeconds": part.chapter.start_seconds,
+        "endSeconds": part.chapter.end_seconds,
+        "markdown": part.markdown,
+        ENGLISH_CACHE_FIELD: EnglishSummaryCache {
+            markdown: part.english,
+            source: part.source,
+            output_language: normalise_summary_language_for_cache(output_language),
+        },
+    })
+}
+
+/// A topic's earlier summary, when it was written from the same text and
+/// settings in the same language.
+fn reusable_chapter(entry: &serde_json::Value, source: &SummaryCacheSource, language: Option<&str>) -> Option<(String, String)> {
+    let cache: EnglishSummaryCache = serde_json::from_value(entry.get(ENGLISH_CACHE_FIELD)?.clone()).ok()?;
+    if cache.source != *source || cache.output_language != normalise_summary_language_for_cache(language) {
+        return None;
+    }
+    let markdown = entry.get("markdown")?.as_str()?.to_string();
+    (!markdown.trim().is_empty()).then_some((markdown, cache.markdown))
+}
+
 /// Summary service - handles all summary generation logic
 pub struct SummaryService;
 
@@ -361,6 +516,8 @@ impl SummaryService {
         template_id: String,
         summary_language: Option<String>,
         custom_provider_id: Option<String>,
+        chapters: Vec<ChapterText>,
+        regenerate_chapter_id: Option<String>,
     ) {
         let _run_guard = SummaryRunGuard {
             meeting_id: meeting_id.clone(),
@@ -646,29 +803,110 @@ impl SummaryService {
         );
 
         let client = reqwest::Client::new();
-        let result = generate_meeting_summary(
-            &client,
-            &provider,
-            &model_name,
-            &final_api_key,
-            &text,
-            &custom_prompt,
-            &template_id,
-            &template,
+        let run = SummaryRun {
+            client: &client,
+            provider: &provider,
+            model_name: &model_name,
+            api_key: &final_api_key,
+            template_id: &template_id,
+            template: &template,
             token_threshold,
-            ollama_endpoint.as_deref(),
-            custom_openai_endpoint.as_deref(),
-            final_max_tokens,
-            custom_openai_temperature,
-            custom_openai_top_p,
-            app_data_dir.as_ref(),
-            claude_cli_path.as_deref(),
-            Some(&cancellation_token),
-            summary_language.as_deref(),
-            detected_summary_language.as_deref(),
-            cached_english.as_deref(),
-        )
-        .await;
+            ollama_endpoint: ollama_endpoint.as_deref(),
+            custom_openai_endpoint: custom_openai_endpoint.as_deref(),
+            max_tokens: final_max_tokens,
+            temperature: custom_openai_temperature,
+            top_p: custom_openai_top_p,
+            app_data_dir: app_data_dir.as_ref(),
+            claude_cli_path: claude_cli_path.as_deref(),
+            cancellation_token: &cancellation_token,
+            summary_language: summary_language.as_deref(),
+            detected_language: detected_summary_language.as_deref(),
+        };
+        let mut chapter_results: Option<Vec<serde_json::Value>> = None;
+        let result = if chapters.is_empty() {
+            run.summarize(&text, &custom_prompt, cached_english.as_deref()).await
+        } else {
+            let previous = SummaryProcessesRepository::get_summary_data(&pool, &meeting_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|process| process.result)
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                .and_then(|value| value.get(CHAPTERS_FIELD).and_then(|chapters| chapters.as_array().cloned()))
+                .unwrap_or_default();
+            let source_for = |chapter: &ChapterText| {
+                build_summary_cache_source(
+                    &chapter.text,
+                    &chapter_prompt(&custom_prompt, chapter),
+                    &template_id,
+                    &template_fingerprint,
+                    token_threshold,
+                    &model_provider,
+                    &model_name,
+                    ollama_endpoint.as_deref(),
+                    custom_openai_endpoint.as_deref(),
+                    final_max_tokens,
+                    custom_openai_temperature,
+                    custom_openai_top_p,
+                )
+            };
+            let mut done: Vec<ChapterSummary> = Vec::with_capacity(chapters.len());
+            let mut failure = None;
+            let mut chunk_total = 0;
+            for (index, chapter) in chapters.iter().enumerate() {
+                let source = source_for(chapter);
+                let earlier = previous.iter().find(|entry| entry.get("id").and_then(|id| id.as_str()) == Some(chapter.id.as_str()));
+                let reuse = regenerate_chapter_id
+                    .as_deref()
+                    .filter(|only| *only != chapter.id)
+                    .and_then(|_| earlier)
+                    .and_then(|entry| reusable_chapter(entry, &source, summary_language.as_deref()));
+                if let Some((markdown, english)) = reuse {
+                    done.push(ChapterSummary { chapter, markdown, english, source });
+                    continue;
+                }
+                if chapter.text.trim().is_empty() {
+                    let empty = NO_TRANSCRIPT_IN_CHAPTER.to_string();
+                    done.push(ChapterSummary { chapter, markdown: empty.clone(), english: empty, source });
+                    continue;
+                }
+                emit_progress(
+                    "generating",
+                    &format!("Summarizing topic {} of {}: {}…", index + 1, chapters.len(), chapter.title),
+                    None,
+                );
+                let cached = earlier
+                    .and_then(|entry| extract_cached_english_markdown(&entry.to_string(), &source, summary_language.as_deref()).ok().flatten());
+                match run.summarize(&chapter.text, &chapter_prompt(&custom_prompt, chapter), cached.as_deref()).await {
+                    Ok((markdown, english, chunks)) => {
+                        chunk_total += chunks;
+                        done.push(ChapterSummary {
+                            chapter,
+                            markdown: strip_title_if_present(&markdown),
+                            english: strip_title_if_present(&english),
+                            source,
+                        });
+                    }
+                    Err(error) => {
+                        failure = Some(format!("Topic \"{}\": {error}", chapter.title));
+                        break;
+                    }
+                }
+            }
+            match failure {
+                Some(error) => Err(error),
+                None => {
+                    let markdown = compose_chapters(done.iter().map(|part| (part.chapter, part.markdown.as_str())));
+                    let english = compose_chapters(done.iter().map(|part| (part.chapter, part.english.as_str())));
+                    chapter_results = Some(
+                        done.into_iter()
+                            .map(|part| chapter_result_json(part, summary_language.as_deref()))
+                            .collect(),
+                    );
+                    Ok((markdown, english, chunk_total))
+                }
+            }
+        };
 
         let duration = start_time.elapsed().as_secs_f64();
 
@@ -688,12 +926,15 @@ impl SummaryService {
                 );
                 info!("Final markdown generated ({} chars)", final_markdown.len());
 
-                let result_json = build_summary_result_json(
+                let mut result_json = build_summary_result_json(
                     &final_markdown,
                     &english_markdown,
                     cache_source,
                     summary_language.as_deref(),
                 );
+                if let Some(entries) = chapter_results {
+                    result_json[CHAPTERS_FIELD] = serde_json::Value::Array(entries);
+                }
 
                 // Update database with completed status
                 match SummaryProcessesRepository::update_process_completed(
@@ -719,7 +960,9 @@ impl SummaryService {
                     Ok(true) => {
                         // Commit the generated name before completion is emitted:
                         // the UI refetches both the meeting and sidebar on that event.
-                        if let Some(title) = extract_meeting_name_from_markdown(&final_markdown) {
+                        // A meeting split into topics keeps its title: the first topic's would not fit.
+                        let generated_title = if chapters.is_empty() { extract_meeting_name_from_markdown(&final_markdown) } else { None };
+                        if let Some(title) = generated_title {
                             if let Err(error) = MeetingsRepository::update_generated_meeting_title(
                                 &pool, &meeting_id, &title,
                             ).await {
@@ -775,6 +1018,48 @@ impl SummaryService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chapter(id: &str, title: &str, start: f64, end: f64, text: &str) -> ChapterText {
+        ChapterText { id: id.into(), title: title.into(), start_seconds: start, end_seconds: end, text: text.into() }
+    }
+
+    #[test]
+    fn topics_compose_under_their_own_headings() {
+        let budget = chapter("a", "Budget", 0.0, 750.0, "");
+        let hiring = chapter("b", "Hiring", 3_725.0, 4_000.0, "");
+        let composed = compose_chapters(
+            [
+                (&budget, "## Decisions\n- Cut travel\n\n```\n# not a heading\n```"),
+                (&hiring, "###### Deepest\n**Owners**: Ana"),
+            ]
+            .into_iter(),
+        );
+        assert_eq!(
+            composed,
+            "## Budget · 0:00–12:30\n\n### Decisions\n- Cut travel\n\n```\n# not a heading\n```\n\n\
+             ## Hiring · 1:02:05–1:06:40\n\n###### Deepest\n**Owners**: Ana"
+        );
+    }
+
+    #[test]
+    fn a_topic_is_reused_only_with_the_same_source_and_language() {
+        let source = sample_cache_source();
+        let topic = chapter("a", "Budget", 0.0, 60.0, "text");
+        let entry = chapter_result_json(
+            ChapterSummary { chapter: &topic, markdown: "Ringkasan".into(), english: "Summary".into(), source: source.clone() },
+            Some("id"),
+        );
+        assert_eq!(reusable_chapter(&entry, &source, Some("id")), Some(("Ringkasan".into(), "Summary".into())));
+        assert_eq!(reusable_chapter(&entry, &source, Some("en")), None, "another language is a translation, not a reuse");
+        let mut changed = source.clone();
+        changed.transcript_fingerprint = stable_text_fingerprint("different text");
+        assert_eq!(reusable_chapter(&entry, &changed, Some("id")), None);
+        // A language switch still finds the English draft for translation.
+        assert_eq!(
+            extract_cached_english_markdown(&entry.to_string(), &source, Some("de")).unwrap(),
+            Some("Summary".into())
+        );
+    }
 
     #[test]
     fn summary_registration_rejects_overlap_and_cleans_up_its_own_token() {

@@ -24,6 +24,7 @@ import { EditableTitle } from '@/components/ui/editable-title';
 import { Hint } from '@/components/ui/tooltip';
 import { useRecordingClock } from '@/components/recording/RecordingPill';
 import { LivePanel, type LivePanelTab } from '@/components/recording/LivePanel';
+import { TopicMarkerButton } from '@/components/recording/TopicMarkerButton';
 import { automaticTitle, onLiveSessionChange, readLiveTitle, writeLiveTitle, type LiveTitle } from '@/lib/live-session';
 import { formatClock } from '@/lib/dates';
 import type { LiveLine } from '@/lib/live-context';
@@ -222,6 +223,11 @@ export function LiveSession({
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
+              <TopicMarkerButton
+                session={String(live?.startedAt ?? 'current')}
+                elapsed={elapsed}
+                disabled={!isRecording || isStopping || isProcessingStop}
+              />
               <Hint label="Copy transcript">
                 <Button variant="ghost" size="icon-sm" onClick={copyTranscript} disabled={transcripts.length === 0} aria-label="Copy transcript">
                   <Copy />

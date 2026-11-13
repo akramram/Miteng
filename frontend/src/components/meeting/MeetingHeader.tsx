@@ -15,6 +15,7 @@ import {
   Download,
   FileText,
   FolderOpen,
+  Milestone,
   MoreHorizontal,
   Scissors,
   Trash2,
@@ -74,6 +75,9 @@ export interface MeetingHeaderProps {
   onTrim?: () => void;
   /** A trimmed recording whose original is still kept. */
   originalKept?: boolean;
+  /** Opens the topics editor; absent without a transcript. */
+  onTopics?: () => void;
+  topicCount?: number;
 }
 
 export function MeetingHeader({
@@ -96,6 +100,8 @@ export function MeetingHeader({
   onTranscriptChanged,
   onTrim,
   originalKept = false,
+  onTopics,
+  topicCount = 0,
 }: MeetingHeaderProps) {
   const router = useRouter();
   const userName = useUserName();
@@ -169,6 +175,16 @@ export function MeetingHeader({
               >
                 <Scissors className="h-3 w-3" />
                 Trimmed · original kept
+              </button>
+            )}
+            {topicCount > 0 && onTopics && (
+              <button
+                type="button"
+                onClick={onTopics}
+                className="inline-flex items-center gap-1 rounded-full bg-af-panel-2 px-2 py-0.5 text-[11px] text-af-text-2 transition-colors hover:bg-af-hover hover:text-af-text"
+              >
+                <Milestone className="h-3 w-3" />
+                {topicCount} topic{topicCount === 1 ? '' : 's'}
               </button>
             )}
           </div>
@@ -250,6 +266,12 @@ export function MeetingHeader({
                 <DropdownMenuItem onSelect={() => setEnhanceOpen(true)}>
                   <Wand2 />
                   Enhance transcript
+                </DropdownMenuItem>
+              )}
+              {onTopics && (
+                <DropdownMenuItem onSelect={onTopics}>
+                  <Milestone />
+                  Topics…
                 </DropdownMenuItem>
               )}
               {onTrim && (

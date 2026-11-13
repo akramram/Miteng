@@ -23,6 +23,7 @@ import { MeetingHeader } from '@/components/meeting/MeetingHeader';
 import { MeetingDocument } from '@/components/meeting/MeetingDocument';
 import { AudioPlayerBar } from '@/components/meeting/AudioPlayerBar';
 import { TrimRecordingDialog, type TrimChange } from '@/components/meeting/TrimRecordingDialog';
+import { TopicsDialog } from '@/components/meeting/TopicsDialog';
 import { PersonCard, type PersonCardTarget } from '@/components/people/PersonCard';
 import { SpeakerIdentityDialog } from '@/components/people/SpeakerIdentityDialog';
 import { useMeetingData } from '@/hooks/meeting-details/useMeetingData';
@@ -35,7 +36,16 @@ import { forgetWaveform, useWaveform } from '@/hooks/useWaveform';
 import { useLabs } from '@/hooks/useLabs';
 import { cleanTranscriptText } from '@/lib/labs';
 import { useUserName } from '@/hooks/useUserName';
-import { announceChange, getMeetingGroup, getMeetingTrim, setMeetingGroup, type TrimState } from '@/lib/workspace-api';
+import {
+  announceChange,
+  getMeetingGroup,
+  getMeetingTrim,
+  listMeetingChapters,
+  setMeetingGroup,
+  type Chapter,
+  type TrimState,
+} from '@/lib/workspace-api';
+import { markersToChapters, readTopicDraft, writeTopicDraft, type TopicMarker } from '@/lib/topic-markers';
 import { deleteMeetings, renameMeeting } from '@/lib/meeting-actions';
 import { displayTitle } from '@/lib/meeting-titles';
 import { cn } from '@/lib/utils';
@@ -112,6 +122,10 @@ export default function PageContent({
   const [trimOpen, setTrimOpen] = useState(false);
   // Bumped when trimming replaces the audio file, so the player loads it again.
   const [audioRevision, setAudioRevision] = useState(0);
+  const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [topicsOpen, setTopicsOpen] = useState(false);
+  // Topic changes marked during the call, waiting for review before the first summary.
+  const [topicDraft, setTopicDraft] = useState<TopicMarker[]>([]);
 
   const meetingData = useMeetingData({ meeting, summaryData });
   const templates = useTemplates();
@@ -219,12 +233,18 @@ export default function PageContent({
   // Trim state: whether an original is kept, and whether the summary predates
   // the last trim. A finished summary can clear the stale flag.
   const summaryCompleted = summaryGeneration.summaryStatus === 'completed';
+  // False until the recording's length is known (or known to be unavailable).
+  const [trimChecked, setTrimChecked] = useState(false);
   useEffect(() => {
-    if (!meeting.folder_path) return;
+    if (!meeting.folder_path) {
+      setTrimChecked(true);
+      return;
+    }
     let cancelled = false;
     void getMeetingTrim(meeting.id)
       .then((state) => !cancelled && setTrimState(state))
-      .catch(() => !cancelled && setTrimState(null));
+      .catch(() => !cancelled && setTrimState(null))
+      .finally(() => !cancelled && setTrimChecked(true));
     return () => {
       cancelled = true;
     };
@@ -254,6 +274,23 @@ export default function PageContent({
     }
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    setChapters([]);
+    setTopicDraft(readTopicDraft(meeting.id));
+    void listMeetingChapters(meeting.id)
+      .then((list) => !cancelled && setChapters(list))
+      .catch((error) => console.warn('Could not load the topics', error));
+    return () => {
+      cancelled = true;
+    };
+  }, [meeting.id]);
+
+  const closeTopicDraft = () => {
+    writeTopicDraft(meeting.id, null);
+    setTopicDraft([]);
+  };
+
   const copyOperations = useCopyOperations({
     meeting,
     meetingTitle: title,
@@ -266,6 +303,8 @@ export default function PageContent({
       // The Labs choice decides which text the summary is written from.
       if (!labsReady) return;
       if (!shouldAutoGenerate || meetingData.transcripts.length === 0) return;
+      // Marked topics are reviewed first; saving or dismissing them lets this run.
+      if (topicDraft.length > 0) return;
       if (isPostCallRecording && postCallDoneFor !== meeting.id) return;
       if (isPostCallRecording) {
         const key = `post-call-summary-started:${meeting.id}`;
@@ -297,6 +336,7 @@ export default function PageContent({
   }, [
     labsReady,
     shouldAutoGenerate,
+    topicDraft.length,
     meeting.id,
     meetingData.transcripts.length,
     isPostCallRecording,
@@ -407,6 +447,26 @@ export default function PageContent({
   };
 
   const hasTranscript = (totalCount ?? meetingData.transcripts.length) > 0;
+  const transcriptEnd = transcriptSegments.reduce((max, segment) => Math.max(max, segment.endTime ?? segment.timestamp ?? 0), 0);
+  // Loaded transcript pages may stop early; the recording's own length comes first.
+  const recordingSeconds = Math.max(trimState?.durationSeconds ?? 0, audio.duration || 0, transcriptEnd);
+  // The proposal needs the recording's real length, so it waits for the trim state.
+  const draftOpen =
+    topicDraft.length > 0 &&
+    hasTranscript &&
+    recordingSeconds > 0 &&
+    trimChecked &&
+    (!isPostCallRecording || postCallDoneFor === meeting.id);
+
+  // New topics mean a new summary: the pending first summary picks them up,
+  // otherwise the summary is written again here.
+  const handleTopicsSaved = (saved: Chapter[]) => {
+    setChapters(saved);
+    const firstSummaryPending = topicDraft.length > 0 && shouldAutoGenerate;
+    if (topicDraft.length > 0) closeTopicDraft();
+    if (firstSummaryPending || !hasTranscript) return;
+    void (meetingData.aiSummary ? summaryGeneration.handleRegenerateSummary('') : summaryGeneration.handleGenerateSummary(''));
+  };
 
   return (
     <motion.div
@@ -419,7 +479,7 @@ export default function PageContent({
         meetingId={meeting.id}
         title={title}
         createdAt={meeting.created_at}
-        durationSeconds={transcriptSegments.reduce((max, segment) => Math.max(max, segment.endTime ?? segment.timestamp ?? 0), 0) || undefined}
+        durationSeconds={transcriptEnd || undefined}
         folderPath={meeting.folder_path}
         groupId={groupId}
         onGroupChange={async (next) => {
@@ -455,6 +515,8 @@ export default function PageContent({
         onTranscriptChanged={() => refreshAfterSpeakerChange()}
         onTrim={trimState ? () => setTrimOpen(true) : undefined}
         originalKept={!!trimState?.original}
+        onTopics={hasTranscript ? () => setTopicsOpen(true) : undefined}
+        topicCount={chapters.length}
       />
 
       <div
@@ -479,6 +541,7 @@ export default function PageContent({
               emptyState={<p className="mt-16 text-center text-sm text-af-text-3">This meeting has no transcript.</p>}
               textMode={labs.cleanTranscript ? textMode : 'tidy'}
               colorIndices={colorIndices}
+              chapters={chapters}
             />
           </div>
           <AudioPlayerBar
@@ -533,8 +596,8 @@ export default function PageContent({
             summaryError={summaryGeneration.summaryError}
             statusMessage={summaryGeneration.getSummaryStatusMessage}
             onGenerate={() => void summaryGeneration.handleGenerateSummary('')}
-            onRegenerate={async (instructions) => {
-              await summaryGeneration.handleRegenerateSummary(instructions);
+            onRegenerate={async (instructions, chapterId) => {
+              await summaryGeneration.handleRegenerateSummary(instructions, chapterId);
             }}
             onStop={summaryGeneration.handleStopGeneration}
             hasTranscript={hasTranscript}
@@ -550,6 +613,7 @@ export default function PageContent({
             regenerateRequest={regenerateRequest}
             onRegenerateRequestHandled={() => setRegenerateRequest(null)}
             summaryStale={trimState?.summaryStale}
+            chapters={chapters}
           />
         </aside>
       </div>
@@ -589,6 +653,23 @@ export default function PageContent({
         hasSummary={!!meetingData.aiSummary}
         onExport={copyOperations.handleExportMeeting}
       />
+      {(topicsOpen || draftOpen) && (
+        <TopicsDialog
+          open
+          onOpenChange={(open) => {
+            if (open) return;
+            setTopicsOpen(false);
+            // Dismissing the marked topics summarizes the meeting as a whole.
+            if (draftOpen) closeTopicDraft();
+          }}
+          meetingId={meeting.id}
+          durationSeconds={recordingSeconds}
+          chapters={chapters}
+          draft={draftOpen ? markersToChapters(topicDraft, recordingSeconds) : null}
+          playhead={audio.status === 'ready' ? audio.currentTime : null}
+          onSaved={handleTopicsSaved}
+        />
+      )}
       {trimState && (
         <TrimRecordingDialog
           key={trimOpen ? 'open' : 'closed'}

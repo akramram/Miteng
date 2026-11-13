@@ -1,4 +1,5 @@
 pub mod action_item;
+pub mod chapter;
 pub mod custom_provider;
 pub mod group;
 pub mod meeting;
