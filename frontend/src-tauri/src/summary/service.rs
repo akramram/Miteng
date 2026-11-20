@@ -375,12 +375,15 @@ fn reusable_chapter(entry: &serde_json::Value, source: &SummaryCacheSource, lang
     (!markdown.trim().is_empty()).then_some((markdown, cache.markdown))
 }
 
-/// Topics written at the same time. Hosted APIs take parallel requests; a
-/// local model or CLI would only queue them and compete for the same memory.
+/// Topics written at the same time. OpenAI and Claude accept a few parallel
+/// requests on paid keys. Groq and OpenRouter free tiers answer parallel calls
+/// with 429 and nothing here retries, so they stay sequential, as do local
+/// models and the CLI, which would only compete for the same memory.
 fn concurrent_topic_summaries(provider: &LLMProvider) -> usize {
     match provider {
-        LLMProvider::OpenAI | LLMProvider::Claude | LLMProvider::Groq | LLMProvider::OpenRouter => 3,
-        LLMProvider::Ollama | LLMProvider::BuiltInAI | LLMProvider::ClaudeCli | LLMProvider::CustomOpenAI => 1,
+        LLMProvider::OpenAI | LLMProvider::Claude => 3,
+        LLMProvider::Groq | LLMProvider::OpenRouter | LLMProvider::Ollama | LLMProvider::BuiltInAI
+        | LLMProvider::ClaudeCli | LLMProvider::CustomOpenAI => 1,
     }
 }
 
@@ -889,16 +892,26 @@ impl SummaryService {
 
             let total = pending.len();
             let finished = std::sync::atomic::AtomicUsize::new(0);
+            // One failed topic fails the summary; topics not yet started skip
+            // their (paid) call.
+            let failed = std::sync::atomic::AtomicBool::new(false);
             let run = &run;
             let custom_prompt = &custom_prompt;
             let finished_ref = &finished;
+            let failed_ref = &failed;
             let emit_progress = &emit_progress;
             // Collected first: a lazily mapped stream trips the Send check of
             // the spawned task (closure lifetimes are not general enough).
             let topic_runs: Vec<_> = pending
                 .into_iter()
                 .map(|(index, chapter, source, cached)| async move {
+                    if failed_ref.load(std::sync::atomic::Ordering::SeqCst) {
+                        return (index, chapter, source, Err("skipped after an earlier topic failed".to_string()));
+                    }
                     let result = run.summarize(&chapter.text, &chapter_prompt(custom_prompt, chapter), cached.as_deref()).await;
+                    if result.is_err() {
+                        failed_ref.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
                     let count = finished_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
                     emit_progress(
                         "generating",
