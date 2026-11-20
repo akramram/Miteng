@@ -356,6 +356,7 @@ pub async fn api_process_transcript<R: Runtime>(
     custom_provider_id: Option<String>,
     chapters: Option<Vec<ChapterText>>,
     regenerate_chapter_id: Option<String>,
+    keep_unchanged_chapters: Option<bool>,
     _auth_token: Option<String>,
 ) -> Result<ProcessTranscriptResponse, String> {
     use uuid::Uuid;
@@ -438,6 +439,7 @@ pub async fn api_process_transcript<R: Runtime>(
             custom_provider_id,
             chapters.unwrap_or_default(),
             regenerate_chapter_id,
+            keep_unchanged_chapters.unwrap_or(false),
         )
         .await;
     });

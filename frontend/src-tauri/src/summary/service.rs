@@ -21,6 +21,7 @@ use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use once_cell::sync::Lazy;
+use futures_util::StreamExt;
 
 // Global cache for model metadata (5 minute TTL)
 static METADATA_CACHE: Lazy<ModelMetadataCache> = Lazy::new(|| {
@@ -374,6 +375,15 @@ fn reusable_chapter(entry: &serde_json::Value, source: &SummaryCacheSource, lang
     (!markdown.trim().is_empty()).then_some((markdown, cache.markdown))
 }
 
+/// Topics written at the same time. Hosted APIs take parallel requests; a
+/// local model or CLI would only queue them and compete for the same memory.
+fn concurrent_topic_summaries(provider: &LLMProvider) -> usize {
+    match provider {
+        LLMProvider::OpenAI | LLMProvider::Claude | LLMProvider::Groq | LLMProvider::OpenRouter => 3,
+        LLMProvider::Ollama | LLMProvider::BuiltInAI | LLMProvider::ClaudeCli | LLMProvider::CustomOpenAI => 1,
+    }
+}
+
 /// Summary service - handles all summary generation logic
 pub struct SummaryService;
 
@@ -518,6 +528,7 @@ impl SummaryService {
         custom_provider_id: Option<String>,
         chapters: Vec<ChapterText>,
         regenerate_chapter_id: Option<String>,
+        keep_unchanged_chapters: bool,
     ) {
         let _run_guard = SummaryRunGuard {
             meeting_id: meeting_id.clone(),
@@ -850,37 +861,65 @@ impl SummaryService {
                     custom_openai_top_p,
                 )
             };
-            let mut done: Vec<ChapterSummary> = Vec::with_capacity(chapters.len());
-            let mut failure = None;
-            let mut chunk_total = 0;
+            // A topic keeps its earlier summary when only another topic is being
+            // written again, or when topics were edited and this one's text,
+            // title, range and settings are unchanged.
+            let mut done: Vec<Option<ChapterSummary>> = Vec::with_capacity(chapters.len());
+            let mut pending = Vec::new();
             for (index, chapter) in chapters.iter().enumerate() {
                 let source = source_for(chapter);
                 let earlier = previous.iter().find(|entry| entry.get("id").and_then(|id| id.as_str()) == Some(chapter.id.as_str()));
-                let reuse = regenerate_chapter_id
-                    .as_deref()
-                    .filter(|only| *only != chapter.id)
-                    .and_then(|_| earlier)
+                let may_reuse = keep_unchanged_chapters
+                    || regenerate_chapter_id.as_deref().is_some_and(|only| only != chapter.id);
+                let reuse = earlier
+                    .filter(|_| may_reuse)
                     .and_then(|entry| reusable_chapter(entry, &source, summary_language.as_deref()));
                 if let Some((markdown, english)) = reuse {
-                    done.push(ChapterSummary { chapter, markdown, english, source });
-                    continue;
-                }
-                if chapter.text.trim().is_empty() {
+                    done.push(Some(ChapterSummary { chapter, markdown, english, source }));
+                } else if chapter.text.trim().is_empty() {
                     let empty = NO_TRANSCRIPT_IN_CHAPTER.to_string();
-                    done.push(ChapterSummary { chapter, markdown: empty.clone(), english: empty, source });
-                    continue;
+                    done.push(Some(ChapterSummary { chapter, markdown: empty.clone(), english: empty, source }));
+                } else {
+                    let cached = earlier
+                        .and_then(|entry| extract_cached_english_markdown(&entry.to_string(), &source, summary_language.as_deref()).ok().flatten());
+                    pending.push((index, chapter, source, cached));
+                    done.push(None);
                 }
-                emit_progress(
-                    "generating",
-                    &format!("Summarizing topic {} of {}: {}…", index + 1, chapters.len(), chapter.title),
-                    None,
-                );
-                let cached = earlier
-                    .and_then(|entry| extract_cached_english_markdown(&entry.to_string(), &source, summary_language.as_deref()).ok().flatten());
-                match run.summarize(&chapter.text, &chapter_prompt(&custom_prompt, chapter), cached.as_deref()).await {
+            }
+
+            let total = pending.len();
+            let finished = std::sync::atomic::AtomicUsize::new(0);
+            let run = &run;
+            let custom_prompt = &custom_prompt;
+            let finished_ref = &finished;
+            let emit_progress = &emit_progress;
+            // Collected first: a lazily mapped stream trips the Send check of
+            // the spawned task (closure lifetimes are not general enough).
+            let topic_runs: Vec<_> = pending
+                .into_iter()
+                .map(|(index, chapter, source, cached)| async move {
+                    let result = run.summarize(&chapter.text, &chapter_prompt(custom_prompt, chapter), cached.as_deref()).await;
+                    let count = finished_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    emit_progress(
+                        "generating",
+                        &format!("Summarized {count} of {total} topics…"),
+                        None,
+                    );
+                    (index, chapter, source, result)
+                })
+                .collect();
+            let written: Vec<_> = futures_util::stream::iter(topic_runs)
+                .buffered(concurrent_topic_summaries(&provider))
+                .collect()
+                .await;
+
+            let mut failure = None;
+            let mut chunk_total = 0;
+            for (index, chapter, source, result) in written {
+                match result {
                     Ok((markdown, english, chunks)) => {
                         chunk_total += chunks;
-                        done.push(ChapterSummary {
+                        done[index] = Some(ChapterSummary {
                             chapter,
                             markdown: strip_title_if_present(&markdown),
                             english: strip_title_if_present(&english),
@@ -888,14 +927,14 @@ impl SummaryService {
                         });
                     }
                     Err(error) => {
-                        failure = Some(format!("Topic \"{}\": {error}", chapter.title));
-                        break;
+                        failure.get_or_insert(format!("Topic \"{}\": {error}", chapter.title));
                     }
                 }
             }
             match failure {
                 Some(error) => Err(error),
                 None => {
+                    let done: Vec<ChapterSummary> = done.into_iter().flatten().collect();
                     let markdown = compose_chapters(done.iter().map(|part| (part.chapter, part.markdown.as_str())));
                     let english = compose_chapters(done.iter().map(|part| (part.chapter, part.english.as_str())));
                     chapter_results = Some(

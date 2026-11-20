@@ -296,6 +296,7 @@ export function useSummaryGeneration({
     transcriptTexts,
     chapters,
     regenerateChapterId,
+    keepUnchangedChapters = false,
     customPrompt = '',
     isRegeneration = false,
     requestGeneration: providedRequestGeneration,
@@ -306,6 +307,8 @@ export function useSummaryGeneration({
     chapters?: ChapterText[];
     /** Write only this topic again and keep the others' summaries. */
     regenerateChapterId?: string | null;
+    /** Keep summaries of topics whose text, title and range are unchanged. */
+    keepUnchangedChapters?: boolean;
     customPrompt?: string;
     isRegeneration?: boolean;
     requestGeneration?: number;
@@ -378,6 +381,7 @@ export function useSummaryGeneration({
         summaryLanguage,
         chapters: chapters?.length ? chapters : null,
         regenerateChapterId: chapters?.length ? regenerateChapterId ?? null : null,
+        keepUnchangedChapters: Boolean(chapters?.length) && keepUnchangedChapters,
       }) as { process_id?: unknown };
 
       const process_id = result.process_id;
@@ -969,8 +973,9 @@ export function useSummaryGeneration({
   }, [meeting.id, fetchAllTranscripts, loadChapters, buildSummaryTranscriptPayload, processSummary, modelConfig, isModelConfigLoading, selectedTemplate, onOpenModelSettings]);
 
   // Public API: Regenerate summary from the current saved transcript. With
-  // `chapterId`, only that topic is written again.
-  const handleRegenerateSummary = useCallback(async (customPrompt = '', chapterId: string | null = null) => {
+  // `chapterId`, only that topic is written again; with `keepUnchanged`, topics
+  // whose text and range did not change keep their summaries.
+  const handleRegenerateSummary = useCallback(async (customPrompt = '', chapterId: string | null = null, keepUnchanged = false) => {
     const requestMeetingId = meeting.id;
     const requestGeneration = ++summaryRequestGenerationRef.current;
     const isCurrentRequest = () =>
@@ -1046,6 +1051,7 @@ export function useSummaryGeneration({
     await processSummary({
       ...buildSummaryTranscriptPayload(allTranscripts, chapters),
       regenerateChapterId: chapterId,
+      keepUnchangedChapters: keepUnchanged,
       customPrompt,
       isRegeneration: true,
       requestGeneration,

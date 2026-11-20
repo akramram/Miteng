@@ -26,10 +26,11 @@ pub fn log_dir() -> PathBuf {
     }
 }
 
-/// Install the global logger. `RUST_LOG` still overrides the `info` default.
+/// Install the global logger. `RUST_LOG` still overrides the default, which
+/// keeps ONNX Runtime's per-session graph notes (dozens of lines each) out.
 pub fn init() {
     let mut builder =
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,ort=warn"));
     match RotatingFile::open(log_dir().join("miteng.log")) {
         Ok(file) => {
             builder.target(env_logger::Target::Pipe(Box::new(Tee { file })));

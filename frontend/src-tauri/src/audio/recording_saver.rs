@@ -11,6 +11,8 @@ use super::recording_state::AudioChunk;
 use super::audio_processing::create_meeting_folder;
 use super::incremental_saver::IncrementalAudioSaver;
 
+const INCREMENTAL_TRANSCRIPT_WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Structured transcript segment for JSON export
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptSegment {
@@ -71,6 +73,7 @@ pub struct RecordingSaver {
     meeting_name: Option<String>,
     metadata: Option<MeetingMetadata>,
     transcript_segments: Arc<Mutex<Vec<TranscriptSegment>>>,
+    last_transcripts_write: Mutex<Option<std::time::Instant>>,
     chunk_receiver: Option<mpsc::UnboundedReceiver<AudioChunk>>,
     is_saving: Arc<Mutex<bool>>,
     accumulation_handle: Option<tokio::task::JoinHandle<()>>,
@@ -87,6 +90,7 @@ impl RecordingSaver {
             meeting_name: None,
             metadata: None,
             transcript_segments: Arc::new(Mutex::new(Vec::new())),
+            last_transcripts_write: Mutex::new(None),
             chunk_receiver: None,
             is_saving: Arc::new(Mutex::new(false)),
             accumulation_handle: None,
@@ -118,13 +122,25 @@ impl RecordingSaver {
         }
     }
 
-    /// Add or update a structured transcript segment (upserts based on sequence_id)
-    /// Also saves incrementally to disk
+    /// Add or update a structured transcript segment (upserts based on sequence_id).
+    /// The crash-recovery copy on disk is rewritten at most every few seconds:
+    /// a whole-file rewrite per segment grew quadratically over long meetings.
+    /// Stopping writes the final file regardless.
     pub fn add_transcript_segment(&self, segment: TranscriptSegment) {
         Self::upsert_transcript_segment(&self.transcript_segments, segment);
 
-        // NEW: Save incrementally to disk
-        if let Some(folder) = &self.meeting_folder {
+        let Some(folder) = &self.meeting_folder else { return };
+        let due = match self.last_transcripts_write.lock() {
+            Ok(mut last) => {
+                let due = last.map_or(true, |at| at.elapsed() >= INCREMENTAL_TRANSCRIPT_WRITE_INTERVAL);
+                if due {
+                    *last = Some(std::time::Instant::now());
+                }
+                due
+            }
+            Err(_) => true,
+        };
+        if due {
             if let Err(e) = self.write_transcripts_json(folder) {
                 warn!("Failed to write incremental transcript update: {}", e);
             }

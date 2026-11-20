@@ -603,6 +603,7 @@ async fn run_import<R: Runtime>(
                     segment.samples.clone(),
                     language.clone(),
                     vocabulary.as_deref(),
+                    false,
                 )
                 .await
                 .map_err(|e| anyhow!("Whisper transcription failed on segment {}: {}", i, e))?;

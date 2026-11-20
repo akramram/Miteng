@@ -465,7 +465,7 @@ export default function PageContent({
     const firstSummaryPending = topicDraft.length > 0 && shouldAutoGenerate;
     if (topicDraft.length > 0) closeTopicDraft();
     if (firstSummaryPending || !hasTranscript) return;
-    void (meetingData.aiSummary ? summaryGeneration.handleRegenerateSummary('') : summaryGeneration.handleGenerateSummary(''));
+    void (meetingData.aiSummary ? summaryGeneration.handleRegenerateSummary('', null, true) : summaryGeneration.handleGenerateSummary(''));
   };
 
   return (

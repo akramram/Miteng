@@ -13,7 +13,10 @@ use tokio::io::AsyncWriteExt;
 use crate::config::WHISPER_MODEL_CATALOG;
 use super::acceleration::{whisper_context_acceleration_for, WhisperCompiledBackend};
 
-const MAX_INITIAL_PROMPT_TOKENS: usize = 224;
+/// The vocabulary prompt is decoded with every call. Measured on a meeting
+/// recording with large-v3-turbo: 64 tokens cost ~13% more time per call,
+/// 224 tokens (Whisper's own limit) twice as much.
+const MAX_INITIAL_PROMPT_TOKENS: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModelStatus {
@@ -382,7 +385,7 @@ impl WhisperEngine {
     }
     
     // Enhanced function to clean repetitive text patterns and meaningless outputs
-    fn clean_repetitive_text(text: &str) -> String {
+    pub(crate) fn clean_repetitive_text(text: &str) -> String {
         if text.is_empty() {
             return String::new();
         }
@@ -530,37 +533,26 @@ impl WhisperEngine {
         repeated_words as f32 / total_words
     }
     
-    /// Transcribe audio with streaming support for partial results and adaptive quality
-    pub async fn transcribe_audio_with_confidence(
-        &self,
-        audio_data: Vec<f32>,
-        language: Option<String>,
-        initial_prompt: Option<&str>,
-    ) -> Result<(String, f32, bool)> {
-        let ctx_lock = self.current_context.read().await;
-        let ctx = ctx_lock.as_ref()
-            .ok_or_else(|| anyhow!("No model loaded. Please load a model first."))?;
-
-        let prompt_tokens = Self::tokenize_initial_prompt(ctx, initial_prompt)?;
-
-        // Get adaptive configuration based on hardware
-        let hardware_profile = crate::audio::HardwareProfile::detect();
-        let adaptive_config = hardware_profile.get_whisper_config();
-
-        // ADAPTIVE parameters - optimized for current hardware
+    /// Decoding settings shared by every Whisper call. With `timestamps`,
+    /// Whisper reports where in the audio each piece of text was spoken, which
+    /// lets one call cover several utterances packed together.
+    fn full_params<'a>(
+        prompt_tokens: &'a [WhisperToken],
+        language: Option<&'a str>,
+        timestamps: bool,
+    ) -> FullParams<'a, 'a> {
+        let adaptive_config = crate::audio::HardwareProfile::detect().get_whisper_config();
         let mut params = FullParams::new(SamplingStrategy::BeamSearch {
             beam_size: adaptive_config.beam_size as i32,
-            patience: 1.0
+            patience: 1.0,
         });
         if !prompt_tokens.is_empty() {
-            params.set_tokens(&prompt_tokens);
+            params.set_tokens(prompt_tokens);
         }
 
-        // Configure with adaptive settings
-        // If language is "auto" or None, use automatic language detection (pass None)
-        // If language is "auto-translate", enable translation to English
-        // Otherwise, use the specified language code
-        let (language_code, should_translate) = match language.as_deref() {
+        // "auto"/None detects the language, "auto-translate" also translates
+        // to English, anything else is a language code.
+        let (language_code, should_translate) = match language {
             Some("auto") | None => (None, false),
             Some("auto-translate") => (None, true),
             Some(lang) => (Some(lang), false),
@@ -568,38 +560,53 @@ impl WhisperEngine {
         params.set_language(language_code);
         params.set_translate(should_translate);
 
-        // CRITICAL: Disable timestamp tokens to prevent whisper.cpp chunking heuristics
-        // The "single timestamp ending - skip entire chunk" optimization incorrectly discards
-        // complete, valid transcriptions. Disabling timestamps forces whisper to return ALL text.
-        params.set_no_timestamps(true);     // Prevent timestamp-based segment skipping
-        params.set_token_timestamps(true);  // Keep for any timestamp-aware features
+        // Without timestamps whisper.cpp returns all text of a single utterance;
+        // its timestamp heuristics can otherwise drop a chunk ending on a lone
+        // timestamp token.
+        params.set_no_timestamps(!timestamps);
+        params.set_token_timestamps(true);
 
-        // PERFORMANCE: Disable ALL whisper.cpp internal printing
-        // This reduces C library log spam significantly
-        params.set_print_special(false);      // Don't print special tokens
-        params.set_print_progress(false);     // Don't print progress
-        params.set_print_realtime(false);     // Don't print realtime info
-        params.set_print_timestamps(false);   // Don't print timestamps
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
 
-        // Additional suppression to reduce C library verbosity
         params.set_suppress_blank(true);
         params.set_suppress_non_speech_tokens(true);
         params.set_temperature(adaptive_config.temperature);
         params.set_max_initial_ts(1.0);
         params.set_entropy_thold(2.4);
         params.set_logprob_thold(-1.0);
-        // BALANCED FIX: Lowered from 0.75 to 0.55 to allow quiet speech detection
-        // Previous value was too aggressive and rejected valid quiet speech
-        // 0.55 is balanced - prevents hallucinations while preserving quiet speech
+        // 0.55 keeps quiet speech while rejecting silence hallucinations.
         params.set_no_speech_thold(if super::labs::strict_silence_enabled() { 0.45 } else { 0.55 });
         params.set_max_len(200);
         params.set_single_segment(false);
+        params
+    }
 
-        // Set thread count based on hardware (if supported by whisper.cpp)
-        if let Some(_max_threads) = adaptive_config.max_threads {
-            // Note: whisper.cpp may or may not expose thread control through params
-            // Removed debug log to reduce I/O overhead in transcription hot path
-        }
+    /// Transcribe audio with streaming support for partial results and adaptive quality.
+    ///
+    /// `catch_up` leaves out the vocabulary prompt while live transcription is
+    /// behind the recording. The prompt is decoded with every chunk; a long one
+    /// doubled the time per chunk, and a queue that keeps growing makes stopping
+    /// a long meeting wait for it.
+    pub async fn transcribe_audio_with_confidence(
+        &self,
+        audio_data: Vec<f32>,
+        language: Option<String>,
+        initial_prompt: Option<&str>,
+        catch_up: bool,
+    ) -> Result<(String, f32, bool)> {
+        let ctx_lock = self.current_context.read().await;
+        let ctx = ctx_lock.as_ref()
+            .ok_or_else(|| anyhow!("No model loaded. Please load a model first."))?;
+
+        let prompt_tokens = if catch_up {
+            Vec::new()
+        } else {
+            Self::tokenize_initial_prompt(ctx, initial_prompt)?
+        };
+        let params = Self::full_params(&prompt_tokens, language.as_deref(), false);
 
         let duration_seconds = audio_data.len() as f64 / 16000.0;
         let is_partial = duration_seconds < 15.0; // Consider chunks under 15s as partial
@@ -656,6 +663,44 @@ impl WhisperEngine {
         };
 
         Ok((cleaned_result, avg_confidence, is_partial))
+    }
+
+    /// Transcribe audio and return each piece of text with where it was
+    /// spoken, in seconds from the start of `audio_data`. Whisper encodes a
+    /// fixed 30 s window per call whatever the audio length, so offline
+    /// transcription packs several utterances into one call and uses these
+    /// times to hand the text back to each of them.
+    pub async fn transcribe_timed(
+        &self,
+        audio_data: &[f32],
+        language: Option<&str>,
+        initial_prompt: Option<&str>,
+    ) -> Result<Vec<(f64, f64, String)>> {
+        let ctx_lock = self.current_context.read().await;
+        let ctx = ctx_lock.as_ref()
+            .ok_or_else(|| anyhow!("No model loaded. Please load a model first."))?;
+        let prompt_tokens = Self::tokenize_initial_prompt(ctx, initial_prompt)?;
+        let mut params = Self::full_params(&prompt_tokens, language, true);
+        // One piece per word, timed from token timestamps: sentence-sized
+        // pieces often ran across the pause between two packed utterances.
+        params.set_max_len(1);
+        params.set_split_on_word(true);
+
+        let mut state = ctx.create_state()?;
+        state.full(params, audio_data)?;
+        let mut pieces = Vec::new();
+        for i in 0..state.full_n_segments()? {
+            let Ok(text) = state.full_get_segment_text_lossy(i) else { continue };
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                continue;
+            }
+            // Whisper reports times in centiseconds.
+            let start = state.full_get_segment_t0(i)? as f64 / 100.0;
+            let end = state.full_get_segment_t1(i)? as f64 / 100.0;
+            pieces.push((start, end.max(start), text));
+        }
+        Ok(pieces)
     }
 
     pub async fn transcribe_audio(

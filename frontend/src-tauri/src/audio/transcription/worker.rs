@@ -152,6 +152,7 @@ pub fn start_transcription_task<R: Runtime>(
                     warn!("⚠️ Worker {} pre-validation: {} model not loaded - chunks may be skipped", worker_id, engine_name);
                 }
 
+                let mut catching_up = false;
                 loop {
                     // Try to get a chunk to process
                     let chunk = {
@@ -226,11 +227,22 @@ pub fn start_transcription_task<R: Runtime>(
                                 }
                             };
 
+                            let backlog = chunks_queued_clone
+                                .load(Ordering::SeqCst)
+                                .saturating_sub(chunks_completed_clone.load(Ordering::SeqCst));
+                            let next = catch_up_next(catching_up, backlog, input_finished_clone.load(Ordering::SeqCst));
+                            if next != catching_up {
+                                info!("Worker {}: {} catch-up decoding ({} chunks waiting)",
+                                      worker_id, if next { "starting" } else { "ending" }, backlog);
+                                catching_up = next;
+                            }
+
                             // Transcribe with provider-agnostic approach
                             match transcribe_chunk_with_provider(
                                 &engine_clone,
                                 chunk,
                             vocabulary_clone.as_deref(),
+                                catching_up,
                             )
                             .await
                             {
@@ -488,12 +500,24 @@ pub fn start_transcription_task<R: Runtime>(
     })
 }
 
+/// Whether the next chunk is decoded in catch-up mode. Starts when about half a
+/// minute of speech is waiting, ends once the queue is nearly empty, and drains
+/// whatever is left quickly once recording has stopped.
+fn catch_up_next(active: bool, backlog: u64, recording_stopped: bool) -> bool {
+    const START: u64 = 6;
+    const START_AFTER_STOP: u64 = 3;
+    const END: u64 = 1;
+    let start = if recording_stopped { START_AFTER_STOP } else { START };
+    if active { backlog > END } else { backlog >= start }
+}
+
 /// Transcribe audio chunk using the appropriate provider (Whisper, Parakeet, or trait-based)
 /// Returns: (text, confidence Option, is_partial)
 async fn transcribe_chunk_with_provider(
     engine: &TranscriptionEngine,
     chunk: AudioChunk,
     vocabulary: Option<&str>,
+    catch_up: bool,
 ) -> std::result::Result<(String, Option<f32>, bool), TranscriptionError> {
     // Convert to 16kHz mono for transcription
     let transcription_data = if chunk.sample_rate != 16000 {
@@ -547,7 +571,7 @@ async fn transcribe_chunk_with_provider(
             let language = crate::get_language_preference_internal();
 
             match whisper_engine
-                .transcribe_audio_with_confidence(speech_samples, language, vocabulary)
+                .transcribe_audio_with_confidence(speech_samples, language, vocabulary, catch_up)
                 .await
             {
                 Ok((text, confidence, is_partial)) => {

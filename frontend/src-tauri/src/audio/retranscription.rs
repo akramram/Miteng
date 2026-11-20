@@ -257,6 +257,65 @@ fn create_source_labeled_segments(
     Ok(segments)
 }
 
+/// Longest audio packed into one Whisper call (its window is 30 s).
+const PACK_MAX_SAMPLES: usize = 28 * 16000;
+/// Silence between packed utterances, so Whisper sees the pause and starts a
+/// new timed piece there.
+const PACK_GAP_SAMPLES: usize = 8000;
+
+/// Groups utterances `(index, samples, source)` into Whisper calls: same
+/// source only (a call never mixes microphone and remote audio), in order,
+/// up to `PACK_MAX_SAMPLES` including the gaps.
+pub(crate) fn plan_packs(utterances: &[(usize, usize, Option<&'static str>)]) -> Vec<Vec<usize>> {
+    let mut packs: Vec<Vec<usize>> = Vec::new();
+    let mut open: std::collections::HashMap<Option<&'static str>, (usize, usize)> = Default::default(); // source → (pack, samples)
+    for &(index, samples, source) in utterances {
+        match open.get_mut(&source) {
+            Some((pack, used)) if *used + PACK_GAP_SAMPLES + samples <= PACK_MAX_SAMPLES => {
+                packs[*pack].push(index);
+                *used += PACK_GAP_SAMPLES + samples;
+            }
+            _ => {
+                packs.push(vec![index]);
+                open.insert(source, (packs.len() - 1, samples));
+            }
+        }
+    }
+    packs
+}
+
+/// Joins utterances with silence between them; returns the audio and each
+/// utterance's span in it, in seconds.
+pub(crate) fn pack_audio<'a>(utterances: impl Iterator<Item = &'a [f32]>) -> (Vec<f32>, Vec<(f64, f64)>) {
+    let mut audio = Vec::new();
+    let mut spans = Vec::new();
+    for samples in utterances {
+        if !audio.is_empty() {
+            audio.resize(audio.len() + PACK_GAP_SAMPLES, 0.0);
+        }
+        let start = audio.len() as f64 / 16000.0;
+        audio.extend_from_slice(samples);
+        spans.push((start, audio.len() as f64 / 16000.0));
+    }
+    (audio, spans)
+}
+
+/// Hands each timed piece of text to the utterance it was spoken in: the
+/// span holding its midpoint, else the nearest one.
+pub(crate) fn assign_pieces(spans: &[(f64, f64)], pieces: &[(f64, f64, String)]) -> Vec<String> {
+    let mut texts = vec![String::new(); spans.len()];
+    for (start, end, text) in pieces {
+        let mid = (start + end) / 2.0;
+        let distance = |(s, e): &(f64, f64)| if mid < *s { s - mid } else if mid > *e { mid - e } else { 0.0 };
+        let Some(best) = (0..spans.len()).min_by(|a, b| distance(&spans[*a]).total_cmp(&distance(&spans[*b]))) else { break };
+        if !texts[best].is_empty() {
+            texts[best].push(' ');
+        }
+        texts[best].push_str(text.trim());
+    }
+    texts
+}
+
 /// Internal function to run retranscription
 async fn run_retranscription<R: Runtime>(
     app: AppHandle<R>,
@@ -441,91 +500,106 @@ async fn run_retranscription<R: Runtime>(
     let processable_count = processable_segments.len();
     info!("Processing {} segments (after splitting)", processable_count);
 
-    // Process each speech segment with progress updates
-    let mut all_transcripts: Vec<(String, f64, f64)> = Vec::new(); // (text, start_ms, end_ms)
-    let mut speaker_hints: Vec<Option<&'static str>> = Vec::new();
-    let mut total_confidence = 0.0f32;
+    // Skip very short segments (< 100 ms) and silent ones (RMS < 0.005 and
+    // peak < 0.01), which Whisper turns into "you"/"thank you".
+    let levels: Vec<Option<f32>> = processable_segments
+        .iter()
+        .enumerate()
+        .map(|(i, (segment, _))| {
+            if segment.samples.len() < 1600 {
+                debug!("Skipping short segment {} with {} samples", i, segment.samples.len());
+                return None;
+            }
+            let sum_sq: f32 = segment.samples.iter().map(|&x| x * x).sum();
+            let rms = (sum_sq / segment.samples.len() as f32).sqrt();
+            let peak = segment.samples.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+            if rms < 0.005 && peak < 0.01 {
+                debug!("Skipping silent segment {} with RMS {:.5}, peak {:.5}", i, rms, peak);
+                return None;
+            }
+            Some(rms)
+        })
+        .collect();
 
-    for (i, (segment, speaker_hint)) in processable_segments.iter().enumerate() {
-        // Check for cancellation before each segment
-        if RETRANSCRIPTION_CANCELLED.load(Ordering::SeqCst) {
-            return Err(anyhow!("Retranscription cancelled"));
-        }
-
-        // Calculate progress (25% to 80% range for transcription)
-        let progress = 25 + ((i as f32 / processable_count as f32) * 55.0) as u32;
-        let segment_duration_sec = (segment.end_timestamp_ms - segment.start_timestamp_ms) / 1000.0;
-        emit_progress(
-            &app,
-            &meeting_id,
-            "transcribing",
-            progress,
-            &format!(
-                "Transcribing segment {} of {} ({:.1}s)...",
-                i + 1,
-                processable_count,
-                segment_duration_sec
-            ),
-        );
-
-        // Skip very short segments (< 100ms of audio = 1600 samples at 16kHz)
-        if segment.samples.len() < 1600 {
-            debug!("Skipping short segment {} with {} samples", i, segment.samples.len());
-            continue;
-        }
-
-        // Skip silent segments (RMS < 0.005 and peak < 0.01) to prevent Whisper silence hallucinations (e.g. "you", "thank you")
-        let sum_sq: f32 = segment.samples.iter().map(|&x| x * x).sum();
-        let rms = (sum_sq / segment.samples.len() as f32).sqrt();
-        let peak = segment.samples.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
-        if rms < 0.005 && peak < 0.01 {
-            debug!("Skipping silent segment {} with RMS {:.5}, peak {:.5}", i, rms, peak);
-            continue;
-        }
-
-        // Transcribe this segment
-        let (text, conf) = if use_parakeet {
-            let engine = parakeet_engine.as_ref().unwrap();
+    let mut texts: Vec<Option<(String, f32)>> = vec![None; processable_count];
+    if let Some(engine) = parakeet_engine.as_ref() {
+        for (i, (segment, _)) in processable_segments.iter().enumerate() {
+            if RETRANSCRIPTION_CANCELLED.load(Ordering::SeqCst) {
+                return Err(anyhow!("Retranscription cancelled"));
+            }
+            if levels[i].is_none() {
+                continue;
+            }
+            let progress = 25 + ((i as f32 / processable_count as f32) * 55.0) as u32;
+            emit_progress(
+                &app,
+                &meeting_id,
+                "transcribing",
+                progress,
+                &format!("Transcribing segment {} of {}...", i + 1, processable_count),
+            );
             let text = engine
                 .transcribe_audio(segment.samples.clone(), vocabulary.as_deref())
                 .await
                 .map_err(|e| anyhow!("Parakeet transcription failed on segment {}: {}", i, e))?;
-            (text, 0.9f32)
-        } else {
-            let engine = whisper_engine.as_ref().unwrap();
-            let (text, conf, _) = engine
-                .transcribe_audio_with_confidence(
-                    segment.samples.clone(),
-                    language.clone(),
-                    vocabulary.as_deref(),
-                )
-                .await
-                .map_err(|e| anyhow!("Whisper transcription failed on segment {}: {}", i, e))?;
-            (text, conf)
-        };
-
-        // Skip empty transcripts
-        let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            // Filter out known Whisper silence hallucinations if energy is low
-            let lower = trimmed.to_lowercase();
-            let is_hallucination = (lower == "you" || lower == "you." || lower == "thank you." || lower == "thank you" || lower == "thanks." || lower == "bye." || lower == "bye") && rms < 0.02;
-            if is_hallucination {
-                warn!("Dropping suspected silence hallucination on segment {}: {} chars (rms={:.5}, conf={:.2})", i + 1, trimmed.chars().count(), rms, conf);
-                continue;
-            }
-
-            debug!(
-                "Segment {}/{}: {:.1}s, conf={:.2}, text='{}'",
-                i + 1, processable_count, segment_duration_sec, conf,
-                if trimmed.len() > 80 { let mut end = 80; while !trimmed.is_char_boundary(end) { end -= 1; } &trimmed[..end] } else { trimmed }
-            );
-            all_transcripts.push((text, segment.start_timestamp_ms, segment.end_timestamp_ms));
-            speaker_hints.push(*speaker_hint);
-            total_confidence += conf;
-        } else {
-            debug!("Segment {}/{}: {:.1}s — empty transcription", i + 1, processable_count, segment_duration_sec);
+            texts[i] = Some((text, 0.9));
         }
+    } else {
+        let engine = whisper_engine.as_ref().unwrap();
+        let eligible: Vec<(usize, usize, Option<&'static str>)> = processable_segments
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| levels[*i].is_some())
+            .map(|(i, (segment, hint))| (i, segment.samples.len(), *hint))
+            .collect();
+        let packs = plan_packs(&eligible);
+        info!("Transcribing {} segments in {} Whisper calls", eligible.len(), packs.len());
+        for (pack_index, pack) in packs.iter().enumerate() {
+            if RETRANSCRIPTION_CANCELLED.load(Ordering::SeqCst) {
+                return Err(anyhow!("Retranscription cancelled"));
+            }
+            let progress = 25 + ((pack_index as f32 / packs.len() as f32) * 55.0) as u32;
+            emit_progress(
+                &app,
+                &meeting_id,
+                "transcribing",
+                progress,
+                &format!("Transcribing part {} of {}...", pack_index + 1, packs.len()),
+            );
+            let (audio, spans) = pack_audio(pack.iter().map(|&i| processable_segments[i].0.samples.as_slice()));
+            let pieces = engine
+                .transcribe_timed(&audio, language.as_deref(), vocabulary.as_deref())
+                .await
+                .map_err(|e| anyhow!("Whisper transcription failed on part {}: {}", pack_index + 1, e))?;
+            for (member, text) in pack.iter().zip(assign_pieces(&spans, &pieces)) {
+                let text = crate::whisper_engine::WhisperEngine::clean_repetitive_text(&text);
+                if !text.is_empty() {
+                    let confidence = (text.len() as f32 / 100.0).min(0.9) + 0.1;
+                    texts[*member] = Some((text, confidence));
+                }
+            }
+        }
+    }
+
+    let mut all_transcripts: Vec<(String, f64, f64)> = Vec::new(); // (text, start_ms, end_ms)
+    let mut speaker_hints: Vec<Option<&'static str>> = Vec::new();
+    let mut total_confidence = 0.0f32;
+    for (i, ((segment, speaker_hint), result)) in processable_segments.iter().zip(texts).enumerate() {
+        let (Some((text, conf)), Some(rms)) = (result, levels[i]) else { continue };
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Filter out known Whisper silence hallucinations if energy is low
+        let lower = trimmed.to_lowercase();
+        let is_hallucination = (lower == "you" || lower == "you." || lower == "thank you." || lower == "thank you" || lower == "thanks." || lower == "bye." || lower == "bye") && rms < 0.02;
+        if is_hallucination {
+            warn!("Dropping suspected silence hallucination on segment {}: {} chars (rms={:.5}, conf={:.2})", i + 1, trimmed.chars().count(), rms, conf);
+            continue;
+        }
+        all_transcripts.push((trimmed.to_string(), segment.start_timestamp_ms, segment.end_timestamp_ms));
+        speaker_hints.push(*speaker_hint);
+        total_confidence += conf;
     }
 
     let transcribed_count = all_transcripts.len();
@@ -1081,6 +1155,28 @@ pub async fn is_retranscription_in_progress_command(meeting_id: Option<String>) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn packs_keep_sources_apart_and_text_goes_back_to_its_utterance() {
+        let second = 16000;
+        let packs = plan_packs(&[
+            (0, 10 * second, Some("mic")),
+            (1, 5 * second, Some("system")),
+            (2, 10 * second, Some("mic")),
+            (3, 10 * second, Some("mic")),
+        ]);
+        assert_eq!(packs, vec![vec![0, 2], vec![1], vec![3]], "third 10 s mic utterance would pass 28 s");
+
+        let (audio, spans) = pack_audio([vec![0.1f32; 2 * second], vec![0.1f32; second]].iter().map(Vec::as_slice));
+        assert_eq!(audio.len(), 3 * second + PACK_GAP_SAMPLES);
+        assert_eq!(spans, vec![(0.0, 2.0), (2.5, 3.5)]);
+        let pieces = vec![
+            (0.0, 1.0, "halo".to_string()),
+            (1.1, 2.3, "semua".to_string()),
+            (2.4, 3.6, "oke".to_string()),
+        ];
+        assert_eq!(assign_pieces(&spans, &pieces), vec!["halo semua".to_string(), "oke".to_string()]);
+    }
+
     #[tokio::test]
     async fn stale_meeting_cancellation_cannot_cancel_another_job() {
         let guard = super::RetranscriptionGuard::acquire("meeting-b").unwrap();

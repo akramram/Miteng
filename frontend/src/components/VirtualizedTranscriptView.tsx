@@ -284,10 +284,12 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
   // The topic of each turn, and whether a heading opens it.
   const sections = useMemo(() => {
     if (!chapters?.length) return null;
-    return turns.map((turn, index) => {
+    let previous: Chapter | null | undefined;
+    return turns.map((turn) => {
       const chapter = chapters.find((c) => turn.timestamp >= c.startSeconds && turn.timestamp < c.endSeconds) ?? null;
-      const previous = index > 0 ? chapters.find((c) => turns[index - 1].timestamp >= c.startSeconds && turns[index - 1].timestamp < c.endSeconds) ?? null : undefined;
-      return { chapter, opens: previous === undefined || previous !== chapter };
+      const opens = previous === undefined || previous !== chapter;
+      previous = chapter;
+      return { chapter, opens };
     });
   }, [turns, chapters]);
   // One colour per speaker in first-spoken order, so a renamed speaker keeps theirs.

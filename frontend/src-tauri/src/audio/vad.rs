@@ -479,19 +479,9 @@ impl ContinuousVadProcessor {
                     }
 
                     self.current_speech.clear();
-
-                    // Recreate session so internal session_audio memory does not grow unbounded
-                    match VadSession::new(self.config) {
-                        Ok(session) => {
-                            self.session = session;
-                            // This frame was consumed by the old session; the new
-                            // session's zero is the beginning of the NEXT frame.
-                            self.session_start_sample = self.processed_samples + chunk.len();
-                        }
-                        Err(_e) => {
-                            self.session.reset();
-                        }
-                    }
+                    // Silero drops the finished utterance from its buffer itself;
+                    // the silence that follows is trimmed below. Rebuilding the
+                    // ONNX session here cost a graph optimisation per utterance.
                 }
             }
         }
@@ -542,6 +532,16 @@ impl ContinuousVadProcessor {
                     }
                 }
             }
+        }
+
+        // In silence, keep only Silero's pre-speech pad so its buffer stays
+        // small between utterances. Silent frames while not speaking mean the
+        // state machine is idle, so no pending start index points into the trim.
+        if !self.session.is_speaking()
+            && self.session.current_silence_samples() > 0
+            && self.session.session_audio_samples() > 32_000
+        {
+            self.session.trim_start_silence();
         }
 
         self.pre_roll.extend(chunk.iter().copied());

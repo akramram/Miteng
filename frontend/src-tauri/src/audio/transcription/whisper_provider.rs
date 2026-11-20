@@ -27,7 +27,7 @@ impl TranscriptionProvider for WhisperProvider {
     ) -> std::result::Result<TranscriptResult, TranscriptionError> {
         match self
             .engine
-            .transcribe_audio_with_confidence(audio, language, vocabulary)
+            .transcribe_audio_with_confidence(audio, language, vocabulary, false)
             .await
         {
             Ok((text, confidence, is_partial)) => Ok(TranscriptResult {
