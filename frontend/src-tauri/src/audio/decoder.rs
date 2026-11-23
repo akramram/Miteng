@@ -5,7 +5,6 @@
 use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
 use rayon::prelude::*;
-use std::borrow::Cow;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -387,6 +386,27 @@ fn convert_to_wav_with_ffmpeg(
     Ok(temp_path)
 }
 
+/// Open a file with Symphonia's probe, using its extension as the format hint.
+fn probe_audio_file(path: &Path) -> Result<symphonia::core::probe::ProbeResult> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| anyhow!("Failed to open audio file '{}': {}", path.display(), e))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| anyhow!("Failed to probe audio format: {}", e))
+}
+
 /// Decode an audio file (MP4, M4A, WAV, etc.) to raw samples
 pub fn decode_audio_file(path: &Path) -> Result<DecodedAudio> {
     decode_audio_file_with_progress(path, None)
@@ -400,47 +420,35 @@ pub fn decode_audio_file_with_progress(
     info!("Decoding audio file: {}", path.display());
 
     // OGG can contain Opus, which Symphonia cannot decode. FFmpeg handles both
-    // Opus and Vorbis, alongside MKV, WebM, and WMA.
-    // If the file is in a format Symphonia can't decode, use ffmpeg to convert
-    // it to a temporary WAV file first, then decode the WAV with Symphonia.
-    // The _temp_wav_guard keeps the temp file alive until decoding completes,
-    // then auto-deletes it when dropped (even on error/panic).
-    let (_temp_wav_guard, decode_path): (Option<tempfile::TempPath>, Cow<'_, Path>) =
-        if needs_ffmpeg_conversion(path) {
-            info!(
-                "Format requires ffmpeg pre-conversion: .{}",
-                path.extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("unknown")
-            );
-            let temp_path = convert_to_wav_with_ffmpeg(path, progress_callback.as_ref())?;
-            let wav_path = temp_path.to_path_buf();
-            (Some(temp_path), Cow::Owned(wav_path))
-        } else {
-            (None, Cow::Borrowed(path))
-        };
-
-    // Open the file (use decode_path which may be the temp WAV)
-    let file = std::fs::File::open(decode_path.as_ref())
-        .map_err(|e| anyhow!("Failed to open audio file '{}': {}", decode_path.display(), e))?;
-
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-    // Set up format hint based on file extension
-    let mut hint = Hint::new();
-    if let Some(ext) = decode_path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-
-    // Probe the file format
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .map_err(|e| anyhow!("Failed to probe audio format: {}", e))?;
+    // Opus and Vorbis, alongside MKV, WebM, and WMA. Those go straight to a
+    // temporary WAV; any other file Symphonia cannot open (e.g. MP4 whose esds
+    // SL descriptor is not "predefined MP4") falls back to the same conversion.
+    // The guard keeps the temp WAV alive until decoding completes, then
+    // auto-deletes it when dropped (even on error/panic).
+    let mut _temp_wav_guard: Option<tempfile::TempPath> = None;
+    let probed = if needs_ffmpeg_conversion(path) {
+        info!(
+            "Format requires ffmpeg pre-conversion: .{}",
+            path.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("unknown")
+        );
+        let wav = convert_to_wav_with_ffmpeg(path, progress_callback.as_ref())?;
+        let probed = probe_audio_file(&wav)?;
+        _temp_wav_guard = Some(wav);
+        probed
+    } else {
+        match probe_audio_file(path) {
+            Ok(probed) => probed,
+            Err(e) => {
+                warn!("{}; retrying via ffmpeg", e);
+                let wav = convert_to_wav_with_ffmpeg(path, progress_callback.as_ref())?;
+                let probed = probe_audio_file(&wav)?;
+                _temp_wav_guard = Some(wav);
+                probed
+            }
+        }
+    };
 
     let mut format = probed.format;
 
@@ -856,5 +864,31 @@ mod tests {
             assert!(decoded.duration_seconds > 0.1);
             assert!(decoded.samples.iter().any(|sample| sample.abs() > 0.001));
         }
+    }
+
+    #[test]
+    fn mp4_with_non_mp4_sl_descriptor_decodes_via_ffmpeg() {
+        let ffmpeg = find_ffmpeg_path().expect("FFmpeg is required for the import regression test");
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("meeting.mp4");
+        let output = Command::new(&ffmpeg)
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "aac", "-y"])
+            .arg(&input)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+
+        // Rewrite the esds SLConfigDescriptor from predefined MP4 (2) to custom (0),
+        // as some recorders do; Symphonia rejects that at probe time.
+        let mut bytes = std::fs::read(&input).unwrap();
+        let sl = [0x06, 0x80, 0x80, 0x80, 0x01, 0x02];
+        let at = bytes.windows(sl.len()).position(|w| w == sl).expect("esds SL descriptor");
+        bytes[at + sl.len() - 1] = 0x00;
+        std::fs::write(&input, &bytes).unwrap();
+        assert!(probe_audio_file(&input).is_err());
+
+        let decoded = decode_audio_file(&input).unwrap();
+        assert!(decoded.duration_seconds > 0.9);
+        assert!(decoded.samples.iter().any(|sample| sample.abs() > 0.001));
     }
 }
