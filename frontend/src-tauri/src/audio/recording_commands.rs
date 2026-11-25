@@ -254,18 +254,18 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     let mut manager = RecordingManager::new();
 
     // Load recording preferences to get auto_save AND device preferences
-    let (auto_save, preferred_mic_name, preferred_system_name, recordings_folder, per_app_enabled, per_app_targets) =
+    let (auto_save, preferred_mic_name, preferred_system_name, recordings_folder, system_source) =
         match super::recording_preferences::load_recording_preferences(&app).await {
             Ok(prefs) => {
-                info!("📋 Loaded recording preferences: auto_save={}, preferred_mic={:?}, preferred_system={:?}, per_app={}, targets={}",
-                      prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device, prefs.per_app_recording_enabled, prefs.per_app_targets.len());
+                let system_source = prefs.system_audio_source();
+                info!("📋 Loaded recording preferences: auto_save={}, preferred_mic={:?}, preferred_system={:?}, system_source={:?}",
+                      prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device, system_source);
                 (
                     prefs.auto_save,
                     prefs.preferred_mic_device,
                     prefs.preferred_system_device,
                     prefs.save_folder,
-                    prefs.per_app_recording_enabled,
-                    prefs.per_app_targets,
+                    system_source,
                 )
             }
             Err(e) => {
@@ -275,13 +275,14 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
                     None,
                     None,
                     super::recording_preferences::get_default_recordings_folder(),
-                    false,
-                    Vec::new(),
+                    super::recording_preferences::SystemAudioSource::Device,
                 )
             }
         };
     manager.set_recordings_folder(recordings_folder);
-    manager.set_per_app_config(per_app_enabled, per_app_targets);
+    #[cfg(target_os = "windows")]
+    let records_system_device = system_source == super::recording_preferences::SystemAudioSource::Device;
+    manager.set_system_audio_source(system_source);
 
     // ============================================================================
     // MICROPHONE DEVICE RESOLUTION: Preference â†’ Default â†’ Error
@@ -441,7 +442,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         .map_err(|error| { crate::diarization::online::stop(); map_recording_start_error(&app, error) })?;
 
     #[cfg(target_os = "windows")]
-    if !per_app_enabled {
+    if records_system_device {
         start_windows_audio_route_monitor(&app, &manager, resolved_system_device_name);
     }
 
@@ -668,11 +669,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         }
     };
     let auto_save = preferences.auto_save;
+    manager.set_system_audio_source(preferences.system_audio_source());
     manager.set_recordings_folder(preferences.save_folder);
-    manager.set_per_app_config(
-        preferences.per_app_recording_enabled,
-        preferences.per_app_targets.clone(),
-    );
 
     // Always ensure a meeting name is set so incremental saver initializes
     let effective_meeting_name = meeting_name.clone().unwrap_or_else(|| {

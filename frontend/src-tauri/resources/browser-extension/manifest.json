@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Miteng tab audio",
+  "description": "Send one tab's audio, such as a Google Meet or Teams call, to the Miteng recorder on this computer.",
+  "version": "1.0.0",
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6D3la1LZ3SX/OsYEDpbkeSGqaTGB1nbgICjRZnKRWh1McHHvp/h+7JppZ8gznFztaTv150XeKHaC5T7Q0Mxl5OyVzYCpljvRMmK/dqmQSj2N34vCku7ZrkdRcZePgJEzKW8Hbv9IvfyobRyM+l/uEFfhDLZ9tzwSXji/7lw++Uc+MPDBv85zqng8+kzU5i2cfE1GVoLD1S9OSXhTEjp8MV3/dukr1UoicNAkyFouvh72V10bg8Hph6Xl1jyAeRCmqxBRjtxVgyr3Q+igrGEbovOh0oqi6r2ydPpVgUxo0mtqaDAwow6PFnfg5n4LPpGXaCSlQ14nA2NX6D8v9/Pb0QIDAQAB",
+  "permissions": ["activeTab", "tabCapture", "offscreen", "storage"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "Send this tab's audio to Miteng",
+    "default_icon": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png" }
+  },
+  "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+Shift+M" },
+      "description": "Start or stop sending this tab's audio to Miteng"
+    }
+  }
+}

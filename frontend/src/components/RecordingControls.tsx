@@ -114,10 +114,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const { selectedDevices: savedDevices, setSelectedDevices, selectedLanguage } = useConfig();
   const activeDevices = savedDevices ?? selectedDevices;
   const isMacOS = usePlatform() === 'macos';
-  // All computer audio, or only chosen apps (Settings > Recording has it too).
+  // All computer audio, chosen apps, or one browser tab (Settings > Recording has it too).
   const appAudio = useAppAudio();
   const appAudioSupported = useAppAudioSupported();
-  const onlyChosenApps = appAudioSupported && appAudio.onlyApps && appAudio.targets.length > 0;
+  const onlyChosenApps =
+    appAudioSupported && ((appAudio.mode === 'apps' && appAudio.targets.length > 0) || appAudio.mode === 'tab');
   const [audioDevices, setAudioDevices] = useState<AudioDeviceOption[]>([]);
   const [openLane, setOpenLane] = useState<'mic' | 'output' | null>(null);
   const [micGain, setMicGain] = useState(1);

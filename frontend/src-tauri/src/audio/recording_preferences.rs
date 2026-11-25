@@ -110,6 +110,31 @@ pub struct RecordingPreferences {
     pub per_app_target_name: Option<String>,
     #[serde(default)]
     pub per_app_targets: Vec<PerAppTarget>,
+    /// Record the browser tab the Miteng extension sends instead of computer
+    /// audio. Takes precedence over `per_app_recording_enabled`.
+    #[serde(default)]
+    pub browser_tab_recording_enabled: bool,
+}
+
+/// Which computer audio a recording captures.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SystemAudioSource {
+    /// The system output device: everything the computer plays.
+    Device,
+    Apps(Vec<PerAppTarget>),
+    BrowserTab,
+}
+
+impl RecordingPreferences {
+    pub fn system_audio_source(&self) -> SystemAudioSource {
+        if self.browser_tab_recording_enabled {
+            SystemAudioSource::BrowserTab
+        } else if self.per_app_recording_enabled && !self.per_app_targets.is_empty() {
+            SystemAudioSource::Apps(self.per_app_targets.clone())
+        } else {
+            SystemAudioSource::Device
+        }
+    }
 }
 
 fn default_mic_gain() -> f32 {
@@ -137,6 +162,7 @@ impl Default for RecordingPreferences {
             per_app_target_app: None,
             per_app_target_name: None,
             per_app_targets: Vec::new(),
+            browser_tab_recording_enabled: false,
         }
     }
 }

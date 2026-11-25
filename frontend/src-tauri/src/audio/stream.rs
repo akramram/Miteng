@@ -274,6 +274,10 @@ pub enum StreamBackend {
         stop_flag: Arc<std::sync::atomic::AtomicBool>,
         thread_handles: Vec<std::thread::JoinHandle<()>>,
     },
+    /// One browser tab, sent by the Miteng tab audio extension.
+    BrowserTab {
+        task: tokio::task::JoinHandle<()>,
+    },
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -760,6 +764,35 @@ impl AudioStream {
         }
     }
 
+    /// Audio of the browser tab the Miteng extension is sending. Recording starts
+    /// even before a tab connects; the mixer fills the gap with silence.
+    pub async fn create_browser_tab_stream(
+        state: Arc<RecordingState>,
+        recording_sender: Option<mpsc::UnboundedSender<super::recording_state::AudioChunk>>,
+    ) -> Result<Self> {
+        use super::capture::browser_tab;
+        let device = Arc::new(AudioDevice {
+            name: "Browser tab".to_string(),
+            device_type: super::devices::DeviceType::Output,
+        });
+        let capture = AudioCapture::new(
+            device.clone(),
+            state,
+            browser_tab::SAMPLE_RATE,
+            1,
+            DeviceType::System,
+            recording_sender,
+        );
+        let mut audio = browser_tab::HUB.subscribe();
+        let task = tokio::spawn(async move {
+            while let Some(block) = audio.recv().await {
+                capture.process_audio_data(&block);
+            }
+        });
+        info!("🌐 Browser tab audio stream started (tab connected: {})", browser_tab::HUB.status().connected);
+        Ok(Self { device, backend: StreamBackend::BrowserTab { task } })
+    }
+
     /// Build stream based on sample format
     fn build_stream(
         device: &Device,
@@ -910,6 +943,10 @@ impl AudioStream {
                 }
                 info!("Windows process loopback stream(s) stopped");
             }
+            StreamBackend::BrowserTab { task } => {
+                super::capture::browser_tab::HUB.unsubscribe();
+                task.abort();
+            }
         }
 
         // Explicitly drop self.device Arc reference
@@ -938,17 +975,18 @@ impl AudioStreamManager {
         }
     }
 
-    /// Start audio streams with optional per-app audio capture for system sound
-    pub async fn start_streams_with_per_app(
+    /// Start the microphone and the chosen computer audio source
+    pub async fn start_streams_with_source(
         &mut self,
         microphone_device: Option<Arc<AudioDevice>>,
         system_device: Option<Arc<AudioDevice>>,
-        per_app_targets: Option<Vec<crate::audio::recording_preferences::PerAppTarget>>,
+        system_source: crate::audio::recording_preferences::SystemAudioSource,
         recording_sender: Option<mpsc::UnboundedSender<super::recording_state::AudioChunk>>,
     ) -> Result<()> {
         use super::capture::get_current_backend;
+        use crate::audio::recording_preferences::SystemAudioSource;
         let backend = get_current_backend();
-        info!("🎙️ Starting audio streams with backend: {:?}, per-app: {:?}", backend, per_app_targets.is_some());
+        info!("🎙️ Starting audio streams with backend: {:?}, system source: {:?}", backend, system_source);
 
         // Start microphone stream
         if let Some(mic_device) = microphone_device {
@@ -970,8 +1008,13 @@ impl AudioStreamManager {
             info!("ℹ️ No microphone device specified, skipping microphone stream");
         }
 
-        // Start system audio stream or per-app stream
-        if let Some(targets) = per_app_targets {
+        // Start the computer audio stream
+        if system_source == SystemAudioSource::BrowserTab {
+            let stream = AudioStream::create_browser_tab_stream(self.state.clone(), recording_sender.clone()).await?;
+            self.state.set_system_device(stream.device().clone().into());
+            self.state.set_capture_active(DeviceType::System, true);
+            self.system_stream = Some(stream);
+        } else if let SystemAudioSource::Apps(targets) = system_source {
             info!("🎯 Creating per-app audio stream for {} target(s)", targets.len());
             match AudioStream::create_per_app_stream(
                 targets,
@@ -1026,7 +1069,7 @@ impl AudioStreamManager {
         system_device: Option<Arc<AudioDevice>>,
         recording_sender: Option<mpsc::UnboundedSender<super::recording_state::AudioChunk>>,
     ) -> Result<()> {
-        self.start_streams_with_per_app(microphone_device, system_device, None, recording_sender).await
+        self.start_streams_with_source(microphone_device, system_device, crate::audio::recording_preferences::SystemAudioSource::Device, recording_sender).await
     }
 
     /// Stop all audio streams

@@ -539,6 +539,9 @@ pub fn run() {
             // Free Whisper/Parakeet VRAM a couple minutes after last STT use.
             audio::common::start_stt_idle_unloader();
 
+            // Receive a browser tab's audio from the Miteng tab audio extension.
+            audio::capture::browser_tab::start(_app.handle().clone());
+
             // Hydrate mic gain (and other recording prefs) into runtime atomics.
             let app_for_prefs = _app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -903,6 +906,8 @@ pub fn run() {
             audio::recording_preferences::set_recording_preferences,
             audio::recording_preferences::get_default_recordings_folder_path,
             audio::recording_preferences::open_recordings_folder,
+            audio::capture::browser_tab::get_browser_tab_status,
+            audio::capture::browser_tab::open_browser_extension_folder,
             audio::recording_preferences::discard_recording_folder,
             audio::recording_preferences::select_recording_folder,
             audio::recording_preferences::get_recordable_apps,

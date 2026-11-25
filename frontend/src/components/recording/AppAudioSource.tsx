@@ -2,15 +2,19 @@
 
 /**
  * Choose the computer audio a recording captures: everything the computer
- * plays, or only chosen apps, e.g. just the call without music or
- * notification sounds. Shown in Settings > Recording and in the record card's
- * system audio panel; both edit the same saved choice.
+ * plays, only chosen apps, e.g. just the call without music or notification
+ * sounds, or one browser tab (a Meet or Teams call in Edge) sent by the Miteng
+ * extension. Shown in Settings > Recording and in the record card's system
+ * audio panel; both edit the same saved choice.
  */
 import { useMemo, useState } from 'react';
-import { AppWindow, FolderOpen, Plus, X } from 'lucide-react';
+import { AppWindow, Copy, FolderOpen, Plus, X } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
+import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { usePlatform } from '@/hooks/usePlatform';
-import { useAppAudio, type AppAudioChoice } from '@/hooks/useAppAudio';
+import { useAppAudio, type AppAudioChoice, type AudioSourceMode } from '@/hooks/useAppAudio';
+import { useBrowserTab } from '@/hooks/useBrowserTab';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Spinner } from '@/components/ui/spinner';
@@ -36,28 +40,114 @@ const STATUS_LABEL: Record<ReturnType<AppAudioChoice['statusOf']>, string> = {
   unknown: '',
 };
 
+const MODE_LABEL: Record<AudioSourceMode, string> = {
+  all: 'All computer audio',
+  apps: 'Chosen apps',
+  tab: 'Browser tab',
+};
+
 function ModeSwitch({ choice, disabled }: { choice: AppAudioChoice; disabled?: boolean }) {
   return (
     <div role="radiogroup" aria-label="Computer audio to record" className="inline-flex w-full rounded-lg border border-af-border bg-af-panel-2 p-[3px]">
-      {([false, true] as const).map((onlyApps) => {
-        const selected = choice.onlyApps === onlyApps;
+      {(['all', 'apps', 'tab'] as const).map((mode) => {
+        const selected = choice.mode === mode;
         return (
           <button
-            key={String(onlyApps)}
+            key={mode}
             type="button"
             role="radio"
             aria-checked={selected}
             disabled={disabled}
-            onClick={() => !selected && choice.setOnlyApps(onlyApps)}
+            onClick={() => !selected && choice.setMode(mode)}
             className={cn(
               'h-7 flex-1 rounded-md px-2 text-xs font-medium transition-colors disabled:cursor-not-allowed',
               selected ? 'bg-af-raised text-af-text shadow-sm' : 'text-af-text-3 hover:text-af-text disabled:hover:text-af-text-3',
             )}
           >
-            {onlyApps ? 'Only chosen apps' : 'All computer audio'}
+            {MODE_LABEL[mode]}
           </button>
         );
       })}
+    </div>
+  );
+}
+
+function hostOf(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
+}
+
+/** Which tab is sending audio, and how to install the extension. */
+function BrowserTabSource({ compact }: { compact: boolean }) {
+  const status = useBrowserTab();
+  const [folder, setFolder] = useState<string | null>(null);
+  const text = compact ? 'text-[11px]' : 'text-xs';
+
+  const openFolder = async () => {
+    try {
+      setFolder(await invoke<string>('open_browser_extension_folder'));
+    } catch (error) {
+      toast.error('Could not open the extension folder', { description: String(error) });
+    }
+  };
+
+  if (!status) return <div className="af-skeleton h-6 rounded-lg" />;
+
+  return (
+    <div className="space-y-2">
+      {!status.listening ? (
+        <p className={cn('leading-relaxed text-af-danger', text)}>
+          Miteng can&apos;t receive tab audio: port 47920 is used by another program. Quit it or restart your Mac.
+        </p>
+      ) : status.connected ? (
+        <p className={cn('flex min-w-0 items-center gap-1.5 text-af-text-2', text)}>
+          <span className="h-2 w-2 shrink-0 rounded-full bg-af-success" />
+          <span className="truncate">
+            Receiving {status.title || 'a tab'}
+            {hostOf(status.url) && <span className="text-af-text-4"> · {hostOf(status.url)}</span>}
+          </span>
+        </p>
+      ) : (
+        <p className={cn('flex items-start gap-1.5 leading-relaxed text-af-text-3', text)}>
+          <span className="mt-1 h-2 w-2 shrink-0 rounded-full border border-af-text-4" />
+          <span>
+            No tab connected. In Edge, open the meeting tab and click the Miteng button in the toolbar (or press
+            Alt+Shift+M). Until then the other side of the call isn&apos;t recorded.
+          </span>
+        </p>
+      )}
+      {!status.connected && (
+        <details className={cn('text-af-text-3', text)}>
+          <summary className="cursor-pointer select-none text-af-accent">Install the Edge extension</summary>
+          <ol className="mt-1.5 list-decimal space-y-1 pl-4 leading-relaxed">
+            <li>
+              <button type="button" onClick={openFolder} className="inline-flex items-center gap-1 text-af-accent hover:underline">
+                <FolderOpen className="h-3 w-3" /> Show the extension folder
+              </button>
+            </li>
+            <li>In Edge, go to edge://extensions and turn on Developer mode.</li>
+            <li>Drag the browser-extension folder onto that page, or click Load unpacked and choose it.</li>
+            <li>Pin the Miteng button so it stays in the toolbar.</li>
+          </ol>
+          {folder && (
+            <p className="mt-1.5 flex min-w-0 items-center gap-1.5">
+              <code className="truncate rounded bg-af-panel-2 px-1.5 py-0.5 text-af-text-2">{folder}</code>
+              <button
+                type="button"
+                aria-label="Copy folder path"
+                onClick={() => void navigator.clipboard.writeText(folder).then(() => toast.success('Path copied'))}
+                className="shrink-0 text-af-text-3 hover:text-af-text"
+              >
+                <Copy className="h-3 w-3" />
+              </button>
+            </p>
+          )}
+        </details>
+      )}
     </div>
   );
 }
@@ -182,18 +272,21 @@ export function AppAudioSource({
 
   if (!choice.loaded) return <div className="af-skeleton h-8 rounded-lg" />;
 
+  const onlyApps = choice.mode === 'apps';
   const hint = live
     ? 'Applies from your next recording.'
-    : choice.onlyApps && choice.targets.length === 0
+    : onlyApps && choice.targets.length === 0
       ? 'Until you add an app, all computer audio is recorded.'
-      : choice.onlyApps
+      : onlyApps
         ? "Only these apps are recorded. If none is open when you start, the recording can't start."
-        : null;
+        : choice.mode === 'tab'
+          ? 'Only that tab is recorded, not other tabs or apps. You can connect the tab before or during the recording.'
+          : null;
 
   return (
     <div className={cn('space-y-2.5', compact && 'space-y-2')}>
       <ModeSwitch choice={choice} disabled={live} />
-      {choice.onlyApps && (
+      {onlyApps && (
         <ul className="flex flex-wrap items-center gap-1.5">
           {choice.targets.map((target) => (
             <AppChip key={target.executable} target={target} choice={choice} disabled={live} />
@@ -203,8 +296,9 @@ export function AppAudioSource({
           </li>
         </ul>
       )}
+      {choice.mode === 'tab' && <BrowserTabSource compact={compact} />}
       {hint && <p className={cn('leading-relaxed text-af-text-3', compact ? 'text-[11px]' : 'text-xs')}>{hint}</p>}
-      {choice.onlyApps && !compact && choice.targets.length > 0 && (
+      {onlyApps && !compact && choice.targets.length > 0 && (
         <p className="flex items-center gap-3 text-[11px] text-af-text-4">
           <span className="inline-flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full bg-af-success" /> Playing sound
@@ -233,8 +327,8 @@ export function AppAudioCard() {
         <div className="min-w-0">
           <h3 className="text-[15px] font-semibold text-af-text">Computer audio</h3>
           <p className="mt-0.5 text-[13px] leading-relaxed text-af-text-3">
-            Record everything your computer plays, or only the apps you choose, such as just the call without music or
-            notification sounds. You can also change this from the record card.
+            Record everything your computer plays, only the apps you choose, or one browser tab, such as just the Meet or
+            Teams call in Edge without music or other tabs. You can also change this from the record card.
           </p>
         </div>
       </div>

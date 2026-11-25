@@ -44,6 +44,8 @@ export interface RecordingPreferences {
   per_app_target_app?: string | null;
   per_app_target_name?: string | null;
   per_app_targets?: PerAppTarget[];
+  /** Record the browser tab the Miteng extension sends; wins over `per_app_recording_enabled`. */
+  browser_tab_recording_enabled?: boolean;
 }
 
 interface RecordingSettingsProps {

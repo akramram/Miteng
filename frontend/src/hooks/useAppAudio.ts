@@ -2,8 +2,9 @@
 
 /**
  * Which computer audio a recording captures: everything the computer plays,
- * or only chosen apps (Windows and macOS). Rust reads the choice when a
- * recording starts, so a change applies from the next recording.
+ * only chosen apps (Windows and macOS), or one browser tab sent by the Miteng
+ * extension. Rust reads the choice when a recording starts, so a change
+ * applies from the next recording.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
@@ -15,15 +16,17 @@ const APP_AUDIO_CHANGED_EVENT = 'meetily-app-audio-changed';
 const sameApp = (a: { executable: string }, b: { executable: string }) =>
   a.executable.toLowerCase() === b.executable.toLowerCase();
 
+/** `all`: every sound the computer plays. `apps`: only `targets`. `tab`: one browser tab. */
+export type AudioSourceMode = 'all' | 'apps' | 'tab';
+
 export interface AppAudioChoice {
   loaded: boolean;
-  /** Record only `targets` rather than all computer audio. */
-  onlyApps: boolean;
+  mode: AudioSourceMode;
   targets: PerAppTarget[];
   /** Apps running now, those playing sound first. */
   running: RecordableApp[];
   scanning: boolean;
-  setOnlyApps: (value: boolean) => void;
+  setMode: (value: AudioSourceMode) => void;
   addApp: (app: RecordableApp | PerAppTarget) => void;
   removeApp: (executable: string) => void;
   scan: () => Promise<void>;
@@ -35,20 +38,20 @@ export interface AppAudioChoice {
 
 export function useAppAudio(): AppAudioChoice {
   const [loaded, setLoaded] = useState(false);
-  const [onlyApps, setOnlyAppsState] = useState(false);
+  const [mode, setModeState] = useState<AudioSourceMode>('all');
   const [targets, setTargets] = useState<PerAppTarget[]>([]);
   const [running, setRunning] = useState<RecordableApp[]>([]);
   const [scanState, setScanState] = useState<'idle' | 'scanning' | 'done' | 'failed'>('idle');
   const saveChain = useRef(Promise.resolve());
-  const latest = useRef({ onlyApps, targets });
-  latest.current = { onlyApps, targets };
+  const latest = useRef({ mode, targets });
+  latest.current = { mode, targets };
   // Saves announce themselves to other open pickers, not to this one.
   const instance = useRef(Math.random());
 
   const load = useCallback(async () => {
     try {
       const prefs = await invoke<RecordingPreferences>('get_recording_preferences');
-      setOnlyAppsState(!!prefs.per_app_recording_enabled);
+      setModeState(prefs.browser_tab_recording_enabled ? 'tab' : prefs.per_app_recording_enabled ? 'apps' : 'all');
       setTargets(prefs.per_app_targets ?? []);
     } catch (error) {
       console.error('Could not read the computer audio choice:', error);
@@ -66,8 +69,8 @@ export function useAppAudio(): AppAudioChoice {
     return () => window.removeEventListener(APP_AUDIO_CHANGED_EVENT, reload);
   }, [load]);
 
-  const save = useCallback((next: { onlyApps: boolean; targets: PerAppTarget[] }) => {
-    setOnlyAppsState(next.onlyApps);
+  const save = useCallback((next: { mode: AudioSourceMode; targets: PerAppTarget[] }) => {
+    setModeState(next.mode);
     setTargets(next.targets);
     // Read-modify-write, one save at a time, so other settings are never lost.
     saveChain.current = saveChain.current
@@ -76,7 +79,8 @@ export function useAppAudio(): AppAudioChoice {
         await invoke('set_recording_preferences', {
           preferences: {
             ...prefs,
-            per_app_recording_enabled: next.onlyApps,
+            per_app_recording_enabled: next.mode === 'apps',
+            browser_tab_recording_enabled: next.mode === 'tab',
             per_app_targets: next.targets,
             // The single-app fields are the old format; Rust re-adds a target
             // from them when the list is empty, so they follow the list.
@@ -105,25 +109,25 @@ export function useAppAudio(): AppAudioChoice {
 
   // Show which chosen apps are open or playing sound.
   useEffect(() => {
-    if (onlyApps && scanState === 'idle') void scan();
-  }, [onlyApps, scanState, scan]);
+    if (mode === 'apps' && scanState === 'idle') void scan();
+  }, [mode, scanState, scan]);
 
   const addApp = useCallback((app: RecordableApp | PerAppTarget) => {
     const current = latest.current;
     if (current.targets.some((target) => sameApp(target, app))) return;
     save({
-      onlyApps: current.onlyApps,
+      mode: current.mode,
       targets: [...current.targets, { id: app.id || app.executable, name: app.name, executable: app.executable, icon: app.icon ?? null }],
     });
   }, [save]);
 
   const removeApp = useCallback((executable: string) => {
     const current = latest.current;
-    save({ onlyApps: current.onlyApps, targets: current.targets.filter((target) => !sameApp(target, { executable })) });
+    save({ mode: current.mode, targets: current.targets.filter((target) => !sameApp(target, { executable })) });
   }, [save]);
 
-  const setOnlyApps = useCallback((value: boolean) => {
-    save({ onlyApps: value, targets: latest.current.targets });
+  const setMode = useCallback((value: AudioSourceMode) => {
+    save({ mode: value, targets: latest.current.targets });
   }, [save]);
 
   const browse = useCallback(async () => {
@@ -146,11 +150,11 @@ export function useAppAudio(): AppAudioChoice {
 
   return {
     loaded,
-    onlyApps,
+    mode,
     targets,
     running,
     scanning: scanState === 'scanning',
-    setOnlyApps,
+    setMode,
     addApp,
     removeApp,
     scan,

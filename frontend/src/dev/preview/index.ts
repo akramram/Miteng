@@ -67,6 +67,7 @@ const state = {
     per_app_target_app: null as string | null,
     per_app_target_name: null as string | null,
     per_app_targets: [] as Array<{ id: string; name: string; executable: string; icon?: string | null }>,
+    browser_tab_recording_enabled: false,
   },
   meetingDetection: {
     enabled: false,
@@ -530,6 +531,10 @@ function handle(cmd: string, args: Args): unknown {
       return new Promise((resolve) => setTimeout(() => resolve(RUNNING_APPS.map((app) => ({ ...app }))), 250));
     case 'select_custom_app_executable':
       return { id: 'CiscoCollabHost.exe', name: 'Webex', executable: 'CiscoCollabHost.exe', pid: null, has_audio: false, icon: null };
+    case 'get_browser_tab_status':
+      return { listening: true, connected: false, title: null, url: null };
+    case 'open_browser_extension_folder':
+      return '/Users/preview/Library/Application Support/Miteng/browser-extension';
 
     // ---- Labs --------------------------------------------------------------
     case 'get_whisper_strict_silence':

@@ -29,8 +29,7 @@ pub struct RecordingManager {
     recording_saver: RecordingSaver,
     device_monitor: Option<AudioDeviceMonitor>,
     device_event_receiver: Option<mpsc::UnboundedReceiver<DeviceEvent>>,
-    per_app_enabled: bool,
-    per_app_targets: Vec<crate::audio::recording_preferences::PerAppTarget>,
+    system_source: crate::audio::recording_preferences::SystemAudioSource,
 }
 
 // SAFETY: RecordingManager contains types that we've marked as Send
@@ -51,8 +50,7 @@ impl RecordingManager {
             recording_saver: RecordingSaver::new(),
             device_monitor: Some(device_monitor),
             device_event_receiver: Some(device_event_receiver),
-            per_app_enabled: false,
-            per_app_targets: Vec::new(),
+            system_source: crate::audio::recording_preferences::SystemAudioSource::Device,
         }
     }
 
@@ -90,19 +88,23 @@ impl RecordingManager {
             ("No Microphone".to_string(), super::device_detection::InputDeviceKind::Unknown)
         };
 
-        let (sys_name, sys_kind) = if self.per_app_enabled && !self.per_app_targets.is_empty() {
-            let names: Vec<String> = self.per_app_targets.iter().map(|t| t.name.clone()).collect();
-            let display = if names.len() == 1 {
-                names[0].clone()
-            } else {
-                format!("{} apps ({})", names.len(), names.join(", "))
-            };
-            (format!("App Audio ({})", display), super::device_detection::InputDeviceKind::Wired)
-        } else if let Some(ref sys) = system_device {
-            let device_kind = super::device_detection::InputDeviceKind::detect(&sys.name, 512, 48000);
-            (sys.name.clone(), device_kind)
-        } else {
-            ("No System Audio".to_string(), super::device_detection::InputDeviceKind::Unknown)
+        use crate::audio::recording_preferences::SystemAudioSource;
+        let (sys_name, sys_kind) = match (&self.system_source, &system_device) {
+            (SystemAudioSource::BrowserTab, _) => ("Browser tab".to_string(), super::device_detection::InputDeviceKind::Wired),
+            (SystemAudioSource::Apps(targets), _) => {
+                let names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
+                let display = if names.len() == 1 {
+                    names[0].clone()
+                } else {
+                    format!("{} apps ({})", names.len(), names.join(", "))
+                };
+                (format!("App Audio ({})", display), super::device_detection::InputDeviceKind::Wired)
+            }
+            (SystemAudioSource::Device, Some(sys)) => {
+                let device_kind = super::device_detection::InputDeviceKind::detect(&sys.name, 512, 48000);
+                (sys.name.clone(), device_kind)
+            }
+            (SystemAudioSource::Device, None) => ("No System Audio".to_string(), super::device_detection::InputDeviceKind::Unknown),
         };
 
         // Start the audio processing pipeline with FFmpeg adaptive mixer
@@ -135,16 +137,11 @@ impl RecordingManager {
 
         // Start audio streams - they send RAW unmixed chunks to pipeline for mixing
         // Pipeline handles mixing and distribution to both recording and transcription
-        let per_app_opt = if self.per_app_enabled && !self.per_app_targets.is_empty() {
-            Some(self.per_app_targets.clone())
-        } else {
-            None
-        };
-        self.stream_manager.start_streams_with_per_app(microphone_device.clone(), system_device.clone(), per_app_opt, None).await?;
+        self.stream_manager.start_streams_with_source(microphone_device.clone(), system_device.clone(), self.system_source.clone(), None).await?;
 
-        // Start device monitoring to detect disconnects (skip system device monitoring if per-app)
+        // Start device monitoring to detect disconnects (system device only when it is recorded)
         if let Some(ref mut monitor) = self.device_monitor {
-            let monitor_sys = if self.per_app_enabled { None } else { system_device.clone() };
+            let monitor_sys = if self.system_source == SystemAudioSource::Device { system_device.clone() } else { None };
             if let Err(e) = monitor.start_monitoring(microphone_device, monitor_sys) {
                 warn!("Failed to start device monitoring: {}", e);
                 // Non-fatal - continue without monitoring
@@ -453,14 +450,9 @@ impl RecordingManager {
         self.recording_saver.set_meeting_name(name);
     }
 
-    /// Configure per-application audio recording
-    pub fn set_per_app_config(
-        &mut self,
-        enabled: bool,
-        targets: Vec<crate::audio::recording_preferences::PerAppTarget>,
-    ) {
-        self.per_app_enabled = enabled;
-        self.per_app_targets = targets;
+    /// Choose which computer audio the next recording captures
+    pub fn set_system_audio_source(&mut self, source: crate::audio::recording_preferences::SystemAudioSource) {
+        self.system_source = source;
     }
 
     pub fn set_recordings_folder(&mut self, path: std::path::PathBuf) {
