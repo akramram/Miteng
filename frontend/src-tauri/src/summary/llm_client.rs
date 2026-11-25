@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 
 const REQUEST_TIMEOUT_DURATION: Duration = Duration::from_secs(300);
 
@@ -29,16 +29,29 @@ pub struct ChatRequest {
     pub stream: bool,
 }
 
+/// An OpenAI-style chat completion reply.
+#[derive(Debug, PartialEq)]
+pub struct ChatCompletion {
+    pub text: String,
+    /// `finish_reason` was `length`: the output limit cut the reply short.
+    /// Reasoning models can spend the whole limit thinking and return no text.
+    pub hit_length_limit: bool,
+}
+
 /// The reply text of an OpenAI-style chat completion.
-///
+pub fn chat_completion_text(body: &str) -> Result<String, String> {
+    parse_chat_completion(body).map(|reply| reply.text)
+}
+
 /// Accepts a single JSON response (`choices[0].message.content`) and, for servers
 /// that stream even when asked not to, a server-sent event body whose
 /// `data: {..}` chunks carry `choices[0].delta.content` pieces.
-pub fn chat_completion_text(body: &str) -> Result<String, String> {
+pub fn parse_chat_completion(body: &str) -> Result<ChatCompletion, String> {
     let body = body.trim();
     if body.starts_with("data:") {
         let mut text = String::new();
         let mut chunks = 0;
+        let mut hit_length_limit = false;
         for payload in body.lines().filter_map(|line| line.trim().strip_prefix("data:")).map(str::trim) {
             if payload.is_empty() || payload == "[DONE]" {
                 continue;
@@ -49,11 +62,14 @@ pub fn chat_completion_text(body: &str) -> Result<String, String> {
             if let Some(piece) = chunk.pointer("/choices/0/delta/content").and_then(serde_json::Value::as_str) {
                 text.push_str(piece);
             }
+            if chunk.pointer("/choices/0/finish_reason").and_then(serde_json::Value::as_str) == Some("length") {
+                hit_length_limit = true;
+            }
         }
         if chunks == 0 {
             return Err("The server's streamed reply had no data chunks".to_string());
         }
-        return Ok(text);
+        return Ok(ChatCompletion { text, hit_length_limit });
     }
 
     let json: serde_json::Value = serde_json::from_str(body).map_err(|e| {
@@ -63,13 +79,19 @@ pub fn chat_completion_text(body: &str) -> Result<String, String> {
     let message = json.pointer("/choices/0/message").ok_or_else(|| {
         "The server's reply has no choices[0].message; it does not look OpenAI-compatible".to_string()
     })?;
-    match message.get("content") {
-        Some(serde_json::Value::String(content)) => Ok(content.clone()),
+    let hit_length_limit = json.pointer("/choices/0/finish_reason").and_then(serde_json::Value::as_str) == Some("length");
+    let text = match message.get("content") {
+        Some(serde_json::Value::String(content)) => content.clone(),
         // Reasoning models may answer with no visible content yet a reasoning trace.
-        Some(serde_json::Value::Null) | None if message.get("reasoning_content").is_some() => Ok(String::new()),
-        _ => Err("The server's reply has no message content".to_string()),
-    }
+        Some(serde_json::Value::Null) | None if message.get("reasoning_content").is_some() => String::new(),
+        _ => return Err("The server's reply has no message content".to_string()),
+    };
+    Ok(ChatCompletion { text, hit_length_limit })
 }
+
+/// Output limit for a second attempt when a custom server's own default cut a
+/// reasoning model off before it wrote the summary.
+const LENGTH_RETRY_MAX_TOKENS: u32 = 16_384;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -426,11 +448,42 @@ pub async fn generate_summary(
             .text()
             .await
             .map_err(|e| format!("Failed to read LLM response: {}", e))?;
-        let content = chat_completion_text(&body)
+        let reply = parse_chat_completion(&body)
             .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
 
         info!("🐞 LLM Response received from {}", provider_name(provider));
-        Ok(content.trim().to_string())
+        if reply.hit_length_limit {
+            if provider == &LLMProvider::CustomOpenAI && max_tokens.is_none() {
+                warn!(
+                    "Custom server's default output limit cut the reply short; retrying with max_tokens={}",
+                    LENGTH_RETRY_MAX_TOKENS
+                );
+                return Box::pin(generate_summary(
+                    client,
+                    provider,
+                    model_name,
+                    api_key,
+                    system_prompt,
+                    user_prompt,
+                    ollama_endpoint,
+                    custom_openai_endpoint,
+                    Some(LENGTH_RETRY_MAX_TOKENS),
+                    temperature,
+                    top_p,
+                    app_data_dir,
+                    claude_cli_path,
+                    cancellation_token,
+                ))
+                .await;
+            }
+            let limit = max_tokens.map(|t| format!(" ({t} tokens)")).unwrap_or_default();
+            return Err(format!(
+                "The model reached its output limit{limit} before finishing. Reasoning models can spend the whole \
+                 limit thinking. Raise Max tokens for this server in Model settings, then retry. The incomplete \
+                 result was not saved."
+            ));
+        }
+        Ok(reply.text.trim().to_string())
     }
 }
 
@@ -475,6 +528,71 @@ mod chat_completion_tests {
         assert!(chat_completion_text(r#"{"error":{"message":"bad key"}}"#).is_err());
         assert!(chat_completion_text("<html>gateway</html>").is_err());
         assert!(chat_completion_text("data: not-json").is_err());
+    }
+
+    /// Serves one canned chat completion per request and returns each request body.
+    async fn serve_replies(replies: Vec<&'static str>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let mut bodies = Vec::new();
+            for reply in replies {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buf = [0u8; 8192];
+                loop {
+                    let n = socket.read(&mut buf).await.unwrap();
+                    request.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&request);
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let length = text[..end]
+                            .lines()
+                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            bodies.push(text[end + 4..].to_string());
+                            break;
+                        }
+                    }
+                }
+                let response = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}", reply.len());
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+            bodies
+        });
+        (url, task)
+    }
+
+    async fn summarize(url: &str, max_tokens: Option<u32>) -> Result<String, String> {
+        super::generate_summary(
+            &reqwest::Client::new(), &super::LLMProvider::CustomOpenAI, "m", "k", "sys", "user",
+            None, Some(url), max_tokens, None, None, None, None, None,
+        )
+        .await
+    }
+
+    const THOUGHT_UNTIL_LIMIT: &str =
+        r#"{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":"","reasoning_content":"…"}}]}"#;
+
+    #[tokio::test]
+    async fn a_reasoning_model_cut_off_by_the_server_default_is_retried_with_a_higher_limit() {
+        let (url, server) = serve_replies(vec![
+            THOUGHT_UNTIL_LIMIT,
+            r#"{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Summary"}}]}"#,
+        ])
+        .await;
+        assert_eq!(summarize(&url, None).await.unwrap(), "Summary");
+        let bodies = server.await.unwrap();
+        assert!(!bodies[0].contains("max_tokens"));
+        assert!(bodies[1].contains(&format!("\"max_tokens\":{}", super::LENGTH_RETRY_MAX_TOKENS)));
+    }
+
+    #[tokio::test]
+    async fn a_reply_cut_off_by_the_users_own_limit_is_an_error_not_an_empty_summary() {
+        let (url, _server) = serve_replies(vec![THOUGHT_UNTIL_LIMIT]).await;
+        let error = summarize(&url, Some(4096)).await.unwrap_err();
+        assert!(error.contains("output limit (4096 tokens)"), "{error}");
     }
 }
 
