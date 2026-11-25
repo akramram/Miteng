@@ -3,6 +3,7 @@
     "resources": [
       "templates/*.json",
       "resources/diarization/*",
+      "resources/browser-extension/**/*",
       "runtime-deps/*",
       "installer-variants/*",
       "binaries/onnxruntime/*"
