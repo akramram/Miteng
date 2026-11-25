@@ -452,8 +452,9 @@ pub async fn generate_summary(
             .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
 
         info!("🐞 LLM Response received from {}", provider_name(provider));
-        if reply.hit_length_limit {
-            if provider == &LLMProvider::CustomOpenAI && max_tokens.is_none() {
+        // Only custom servers take a Max tokens setting; other providers keep their reply as before.
+        if reply.hit_length_limit && provider == &LLMProvider::CustomOpenAI {
+            if max_tokens.is_none() {
                 warn!(
                     "Custom server's default output limit cut the reply short; retrying with max_tokens={}",
                     LENGTH_RETRY_MAX_TOKENS
@@ -593,6 +594,21 @@ mod chat_completion_tests {
         let (url, _server) = serve_replies(vec![THOUGHT_UNTIL_LIMIT]).await;
         let error = summarize(&url, Some(4096)).await.unwrap_err();
         assert!(error.contains("output limit (4096 tokens)"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn providers_without_a_max_tokens_setting_keep_a_length_limited_reply() {
+        let (url, server) = serve_replies(vec![
+            r#"{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":"Long summary"}}]}"#,
+        ])
+        .await;
+        let reply = super::generate_summary(
+            &reqwest::Client::new(), &super::LLMProvider::Ollama, "m", "k", "sys", "user",
+            Some(&url), None, None, None, None, None, None, None,
+        )
+        .await;
+        assert_eq!(reply.unwrap(), "Long summary");
+        assert_eq!(server.await.unwrap().len(), 1);
     }
 }
 
